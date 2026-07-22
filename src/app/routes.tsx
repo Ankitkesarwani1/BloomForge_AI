@@ -16,13 +16,14 @@ import { AnswerKeyGeneratorPage } from "./components/pages/answer-key-generator-
 import { AnalyticsDashboardPage } from "./components/pages/analytics-dashboard-page";
 import { AdminPanelPage } from "./components/pages/admin-panel-page";
 import { ProfileSettingsPage } from "./components/pages/profile-settings-page";
+import { LandingPage } from "./components/pages/landing-page";
 
 export const router = createBrowserRouter([
+  { path: "/", element: <LandingPage /> },
   {
     path: "/",
     element: <AuthLayout />,
     children: [
-      { index: true, element: <LoginPage /> },
       { path: "login", element: <LoginPage /> },
       { path: "register", element: <RegisterPage /> },
       { path: "forgot-password", element: <ForgotPasswordPage /> },

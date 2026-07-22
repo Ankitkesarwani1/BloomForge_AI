@@ -75,7 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error ? error.message : null };
   }
 
-  async function signUp(email: string, password: string, fullName: string, role: Role) {
+  async function signUp(email: string, password: string, fullName: string, role: "faculty" | "admin" | "exam_cell") {
     const { error } = await supabase.auth.signUp({
       email,
       password,

@@ -1,0 +1,4 @@
+pdfplumber
+pydantic
+google-genai
+pdfjs-dist @supabase/supabase-js
