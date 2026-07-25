@@ -1,43 +1,140 @@
-// Follow this setup guide to integrate the Deno language server with your editor:
-// https://deno.land/manual/getting_started/setup_your_environment
-// This enables autocomplete, go to definition, etc.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// Setup type definitions for built-in Supabase Runtime APIs
-import "@supabase/functions-js/edge-runtime.d.ts";
-import { withSupabase } from "@supabase/server";
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+const supabase = createClient(
+  Deno.env.get("PROJECT_URL")!,
+  Deno.env.get("SERVICE_ROLE_KEY")!
+);
+
+async function generateQuestionsWithGemini(prompt: string) {
+  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey!,
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json" },
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(`Gemini generation error: ${res.status} ${await res.text()}`);
+  }
+
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error("Gemini returned no content");
+
+  // Defensive cleanup in case the model wraps output in fences despite JSON mode
+  const cleaned = text.replace(/^```json\s*|```$/g, "").trim();
+  return JSON.parse(cleaned);
+}
 
 Deno.serve(async (req) => {
-  const { subject, unit, topics, bloomLevel, difficulty, questionType, count, marks } = await req.json();
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
 
-  const prompt = `Generate ${count} ${questionType} exam questions for the subject "${subject}", unit "${unit}", covering topics: ${topics.join(", ")}. Bloom's taxonomy level: ${bloomLevel}. Difficulty: ${difficulty}. Marks per question: ${marks}. Return ONLY a JSON array of objects with fields: question_text, marks.`;
+  try {
+    const { syllabus_id, unit_id, bloom_level, question_type, difficulty, count, marks } =
+      await req.json();
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${Deno.env.get("OPENAI_API_KEY")}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
-    }),
-  });
+    if (!syllabus_id || !unit_id || !bloom_level || !question_type || !difficulty || !count || !marks) {
+      return new Response(JSON.stringify({ error: "Missing required fields" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-  const data = await response.json();
-  return new Response(data.choices[0].message.content, {
-    headers: { "Content-Type": "application/json" },
-  });
+    // 1. Confirm the unit exists
+    const { data: unit, error: unitErr } = await supabase
+      .from("units")
+      .select("id, unit_number, title")
+      .eq("id", unit_id)
+      .single();
+
+    if (unitErr || !unit) {
+      return new Response(JSON.stringify({ error: "Unit not found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // 2. Fetch ALL chunks for this unit — direct fetch, not similarity search,
+    // since the unit is already a tight scope and we want guaranteed full coverage.
+    const { data: unitChunks, error: chunksErr } = await supabase
+      .from("syllabus_chunks")
+      .select("content")
+      .eq("unit_id", unit_id);
+
+    if (chunksErr) {
+      return new Response(JSON.stringify({ error: chunksErr.message }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (!unitChunks || unitChunks.length === 0) {
+      return new Response(
+        JSON.stringify({ error: "No embedded content found for this unit. Re-upload or re-embed the syllabus first." }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 3. Add syllabus-level objectives/outcomes as extra grounding context
+    const { data: syllabusChunks } = await supabase
+      .from("syllabus_chunks")
+      .select("content")
+      .eq("syllabus_id", syllabus_id)
+      .is("unit_id", null);
+
+    const context = [
+      ...unitChunks.map((c) => c.content),
+      ...(syllabusChunks ?? []).map((c) => c.content),
+    ].join("\n\n");
+
+    // 4. Build the grounded generation prompt
+    const isMcq = question_type.toLowerCase().includes("mcq");
+    const prompt = `You are an exam question setter for a university course. Use ONLY the syllabus context below to write questions — do not introduce facts, terms, or examples that are not present in the context.
+
+SYLLABUS CONTEXT:
+${context}
+
+TASK:
+Generate exactly ${count} question(s) with these exact specifications:
+- Question type: ${question_type}
+- Bloom's taxonomy level: ${bloom_level}
+- Difficulty: ${difficulty}
+- Marks per question: ${marks}
+
+Respond with ONLY a JSON array (no markdown, no code fences, no commentary) where each element has this exact shape:
+{
+  "question": "the full question text",
+  "type": "${question_type}",
+  "bloom": "${bloom_level}",
+  "difficulty": "${difficulty}",
+  "marks": ${marks}${isMcq ? ',\n  "options": ["option A", "option B", "option C", "option D"],\n  "correct_answer": "the correct option text"' : ""}
+}`;
+
+    const questions = await generateQuestionsWithGemini(prompt);
+
+    return new Response(JSON.stringify({ questions }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: String(e) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 });
-/* To invoke locally:
-
-  1. Run `supabase start` (see: https://supabase.com/docs/reference/cli/supabase-start)
-  2. Make an HTTP request:
-
-  curl -i --location --request POST 'http://127.0.0.1:54321/functions/v1/generate-questions' \
-    --header 'apiKey: sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH' \
-    --data '{"name":"Functions"}'
-
-*/

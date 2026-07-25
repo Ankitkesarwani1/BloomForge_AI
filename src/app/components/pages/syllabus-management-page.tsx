@@ -226,6 +226,23 @@ export function SyllabusManagementPage() {
     return insertedUnits;
   };
 
+    // Fire-and-forget: triggers embedding generation for RAG retrieval.
+  // Non-blocking so the UI doesn't wait on Gemini calls; failures are logged,
+  // not surfaced as upload errors, since embeddings can be regenerated later
+  // and shouldn't block a successful parse from completing.
+  const triggerEmbeddingGeneration = (syllabusId: string) => {
+    supabase.functions
+      .invoke("generate-embeddings", { body: { syllabus_id: syllabusId } })
+      .then(({ data, error }) => {
+        if (error) {
+          console.error("Embedding generation failed:", error);
+        } else {
+          console.log("Embedding generation result:", data);
+        }
+      })
+      .catch((err) => console.error("Embedding generation error:", err));
+  };
+
   // Sums hours across all modules; null if any module's hours are still unresolved.
   const computeTotalHours = (units: MissingHoursUnit[]): number | null =>
     units.some((unit) => unit.hours == null) ? null : units.reduce((total, unit) => total + (unit.hours ?? 0), 0);
@@ -305,6 +322,8 @@ export function SyllabusManagementPage() {
         .eq("id", missingHoursSyllabusId);
       if (syllabusError) throw syllabusError;
 
+      triggerEmbeddingGeneration(missingHoursSyllabusId);
+
       closeMissingHoursModal();
       fetchSyllabi();
     } catch (err: any) {
@@ -376,6 +395,10 @@ export function SyllabusManagementPage() {
       const { data: createdSyllabus, error: dbError } = await supabase.from('syllabi').insert(newEntry).select('id').single();
       if (dbError) throw dbError;
       const insertedUnits = await storeStructuredContent(createdSyllabus.id, parseResults);
+      if (!parseResults.hasMissingHours) 
+        {
+            triggerEmbeddingGeneration(createdSyllabus.id);
+        }
 
       setSelectedFile(null);
       setSubject("");
@@ -478,6 +501,12 @@ export function SyllabusManagementPage() {
 
       if (error) throw error;
       const insertedUnits = parsedContent ? await storeStructuredContent(editingSyllabus.id, parsedContent) : null;
+
+      // NEW: only re-embed if a new PDF was parsed AND it's fully parsed (not incomplete)
+      if (parsedContent && !parsedContent.hasMissingHours) 
+        {
+          triggerEmbeddingGeneration(editingSyllabus.id);
+        }
 
       const syllabusId = editingSyllabus.id;
       setEditingSyllabus(null);
