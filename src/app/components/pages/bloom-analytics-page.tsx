@@ -1,4 +1,4 @@
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from "recharts";
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Legend } from "recharts";
 import { TrendingUp, TrendingDown, AlertCircle } from "lucide-react";
 
 const bloomDistribution = [
@@ -136,6 +136,7 @@ export function BloomAnalyticsPage() {
             <XAxis dataKey="subject" />
             <YAxis />
             <Tooltip />
+            <Legend />
             <Bar dataKey="remember" fill="#2563EB" radius={[4, 4, 0, 0]} />
             <Bar dataKey="understand" fill="#7C3AED" radius={[4, 4, 0, 0]} />
             <Bar dataKey="apply" fill="#06B6D4" radius={[4, 4, 0, 0]} />

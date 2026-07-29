@@ -253,7 +253,7 @@ export function AnalyticsDashboardPage() {
                 cx="50%"
                 cy="50%"
                 labelLine={false}
-                label={({ topic, percentage }) => `${topic}: ${percentage}%`}
+                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
                 outerRadius={120}
                 fill="#8884d8"
                 dataKey="count"
@@ -284,7 +284,7 @@ export function AnalyticsDashboardPage() {
                 <div className="h-3 bg-muted rounded-full overflow-hidden">
                   <div
                     className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300"
-                    style={{ width: `${item.percentage * 4}%` }}
+                    style={{ width: `${item.percentage}%` }}
                   />
                 </div>
               </div>

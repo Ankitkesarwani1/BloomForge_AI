@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { MessageCircle, X, Send, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -11,6 +11,15 @@ export function AIAssistant() {
       content: "Hi! I'm your AI assistant. I can help you generate questions, analyze Bloom's taxonomy levels, and improve syllabus coverage. How can I assist you today?",
     },
   ]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isOpen]);
 
   const handleSend = () => {
     if (!message.trim()) return;
@@ -102,6 +111,7 @@ export function AIAssistant() {
                   </div>
                 </motion.div>
               ))}
+              <div ref={messagesEndRef} />
             </div>
 
             {/* Input */}
@@ -111,7 +121,7 @@ export function AIAssistant() {
                   type="text"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  onKeyPress={(e) => e.key === "Enter" && handleSend()}
+                  onKeyDown={(e) => e.key === "Enter" && handleSend()}
                   placeholder="Ask me anything..."
                   className="flex-1 px-4 py-2 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary text-sm"
                 />

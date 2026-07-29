@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import {
@@ -73,9 +73,14 @@ function DraggableQuestion({
     },
   });
 
+  const setNodeRef = (node: HTMLDivElement | null) => {
+    drag(node);
+    drop(node);
+  };
+
   return (
     <div
-      ref={(node) => drag(drop(node))}
+      ref={setNodeRef}
       className={`bg-card border border-border rounded-xl p-4 mb-3 cursor-move hover:shadow-md transition-shadow ${
         isDragging ? "opacity-50" : ""
       }`}
@@ -243,7 +248,7 @@ export function QuestionPaperBuilderPage() {
 
       const q = data.questions[0];
       return {
-        id: Date.now() + Math.random(),
+        id: Date.now() + Math.floor(Math.random() * 1000),
         text: q.question,
         marks: q.marks,
         bloomLevel: q.bloom,
@@ -323,8 +328,11 @@ export function QuestionPaperBuilderPage() {
     setGeneratingPaper(true);
     setSections((prev) => prev.map(s => ({ ...s, questions: [] }))); // Clear current
     
+    // Create a local snapshot of sections to iterate over safely
+    const currentSectionsSnapshot = [...sections];
+    
     try {
-      const promises = sections.map(async (section) => {
+      const promises = currentSectionsSnapshot.map(async (section) => {
         const count = section.id === "sectionA" ? 5 : (section.id === "sectionB" ? 3 : (section.id === "sectionC" ? 1 : 3));
         const qPromises = Array.from({ length: count }).map(() => generateSingleQuestion(
           section.defaultType,
@@ -395,7 +403,7 @@ export function QuestionPaperBuilderPage() {
         return;
       }
       
-      const opt = {
+      const opt: any = {
         margin:       0.5,
         filename:     `${paperDetails.title.replace(/\s+/g, '_')}_Paper.pdf`,
         image:        { type: 'jpeg', quality: 0.98 },
@@ -405,8 +413,11 @@ export function QuestionPaperBuilderPage() {
 
       html2pdf().set(opt).from(element).save().then(() => {
         setIsExportingPDF(false);
+      }).catch((e: any) => {
+        console.error(e);
+        setIsExportingPDF(false);
       });
-    }, 100);
+    }, 500);
   };
 
   return (
@@ -590,6 +601,19 @@ export function QuestionPaperBuilderPage() {
                           <option value="Easy">Easy</option>
                           <option value="Medium">Medium</option>
                           <option value="Hard">Hard</option>
+                        </select>
+                      </div>
+                      <div className="col-span-2 md:col-span-1">
+                        <label className="text-sm mb-1 block text-muted-foreground">Default Type</label>
+                        <select 
+                          className="w-full px-3 py-2 bg-card border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                          value={section.defaultType}
+                          onChange={(e) => updateSection(section.id, { defaultType: e.target.value })}
+                        >
+                          <option value="Short Answer">Short Answer</option>
+                          <option value="Long Answer">Long Answer</option>
+                          <option value="MCQ">MCQ</option>
+                          <option value="Analytical">Analytical</option>
                         </select>
                       </div>
                     </div>

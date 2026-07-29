@@ -126,10 +126,16 @@ export function TopNav() {
                 <div className="absolute right-0 mt-2 w-56 bg-card border border-border rounded-xl shadow-lg z-50">
                   <div className="p-4 border-b border-border">
                     <p className="font-medium">{profile?.full_name || "Loading…"}</p>
-                    <p className="text-sm text-muted-foreground">{profile?.email}</p>
+                    <p className="text-sm text-muted-foreground">{profile?.email ?? "—"}</p>
                   </div>
                   <div className="p-2">
-                    <button className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent rounded-lg transition-colors">
+                    <button 
+                      onClick={() => {
+                        navigate("/app/settings");
+                        setShowProfile(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent rounded-lg transition-colors"
+                    >
                       <User className="w-4 h-4" />
                       Profile
                     </button>
