@@ -19,19 +19,62 @@ const bloomVerbGuide: Record<string, string> = {
   Create: "design, formulate, propose, construct, devise",
 };
 
-async function generateQuestionsWithGemini(prompt: string) {
+const questionTypeToEnum: Record<string, string> = {
+  "MCQ": "mcq", "Short Answer": "short_answer", "Long Answer": "long_answer",
+  "Numerical": "numerical", "Case Study": "case_study",
+  "Application Based": "application", "Analytical": "analytical",
+};
+const bloomToEnum: Record<string, string> = {
+  Remember: "remember", Understand: "understand", Apply: "apply",
+  Analyze: "analyze", Evaluate: "evaluate", Create: "create",
+};
+
+// Pulls real accepted questions to use as style exemplars — this is the
+// feedback loop: questions actually used in a finalized paper are the
+// strongest quality signal; approved-but-unused ones are the fallback.
+async function fetchFewShotExamples(syllabusId: string, questionTypeEnum: string, bloomEnum: string) {
+  try {
+    const { data: usedInPapers } = await supabase
+      .from("question_paper_items")
+      .select("questions!inner(question_text, marks, question_type, bloom_level, subject_id)")
+      .eq("questions.subject_id", syllabusId)
+      .eq("questions.question_type", questionTypeEnum)
+      .eq("questions.bloom_level", bloomEnum)
+      .limit(3);
+
+    if (usedInPapers && usedInPapers.length > 0) {
+      return usedInPapers.map((row: any) => row.questions.question_text);
+    }
+  } catch {
+    // relationship/join issue — fall through to the simpler query below
+  }
+
+  const { data: approved } = await supabase
+    .from("questions")
+    .select("question_text")
+    .eq("subject_id", syllabusId)
+    .eq("approved", true)
+    .eq("question_type", questionTypeEnum)
+    .eq("bloom_level", bloomEnum)
+    .order("created_at", { ascending: false })
+    .limit(3);
+
+  return (approved ?? []).map((q) => q.question_text);
+}
+
+async function callGemini(prompt: string) {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey!,
-      },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey! },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json" },
+        generationConfig: {
+          responseMimeType: "application/json",
+          maxOutputTokens: 8192, // headroom for multi-part, worked-example questions
+        },
       }),
     }
   );
@@ -42,10 +85,23 @@ async function generateQuestionsWithGemini(prompt: string) {
 
   const data = await res.json();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("Gemini returned no content");
+  if (!text) throw new Error("Gemini returned no content (likely blocked by safety filters or empty response)");
+  return text;
+}
 
-  const cleaned = text.replace(/^```json\s*|```$/g, "").trim();
-  return JSON.parse(cleaned);
+async function generateQuestionsWithRetry(prompt: string) {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const text = await callGemini(prompt);
+      const cleaned = text.replace(/^```json\s*|```$/g, "").trim();
+      return JSON.parse(cleaned);
+    } catch (e) {
+      lastErr = e;
+      console.error(`Generation attempt ${attempt} failed:`, e);
+    }
+  }
+  throw new Error(`Model output could not be parsed after 2 attempts: ${lastErr}`);
 }
 
 Deno.serve(async (req) => {
@@ -109,14 +165,20 @@ Deno.serve(async (req) => {
 
     const isMcq = question_type.toLowerCase().includes("mcq");
 
-    // KEY CHANGE: the syllabus context is scope guidance only — the model
-    // must use its own subject-matter knowledge to construct a genuine,
-    // real-exam-quality question, not a question about the document itself.
+    // Feedback loop: pull real accepted examples for this exact type+bloom combo
+    const questionTypeEnum = questionTypeToEnum[question_type] ?? "short_answer";
+    const bloomEnum = bloomToEnum[bloom_level] ?? "understand";
+    const examples = await fetchFewShotExamples(syllabus_id, questionTypeEnum, bloomEnum);
+
+    const exampleBlock = examples.length > 0
+      ? `\nHere are examples of previously approved/used questions for this exact course, type, and Bloom's level — match this style, phrasing, and rigor level (but do NOT repeat their content):\n${examples.map((e, i) => `${i + 1}. ${e}`).join("\n")}\n`
+      : "";
+
     const prompt = `You are an experienced university professor setting questions for a semester-end exam paper in an Artificial Intelligence & Data Science / Computer Engineering program (in the style of Indian university autonomous-institute exams).
 
 SCOPE — use this ONLY to know which topic area you are allowed to draw the question from. Do NOT copy this text into the question, and do NOT mention "syllabus", "unit", "module", "topic", "course outcome", or any numbering anywhere in the question itself:
 ${context}
-
+${exampleBlock}
 Draw on your own full subject-matter expertise on this topic to write a rigorous, genuinely testable exam question — the kind that would appear in a real semester-end question paper, NOT a question that asks about the syllabus document itself.
 
 Write exactly ${count} question(s) with these specifications:
@@ -126,11 +188,11 @@ Write exactly ${count} question(s) with these specifications:
 - Marks per question: ${marks}
 
 STRICT RULES:
-1. Never mention "syllabus", "unit", "module", "topic", "course outcome", or any numbering (e.g. "Topic 3.2") in the question text. Write it exactly as it would appear on a real exam paper.
-2. For Numerical, Case Study, or Application-based questions, invent concrete, realistic data (numbers, scenarios, small worked examples) yourself — you may assume suitable data if necessary, exactly as real exam papers instruct students to do.
-3. For questions worth 8 or more marks, structure them with 2–3 sub-parts — (i), (ii), (iii) or (a), (b) — within the single question text, the way real long-answer and case-study questions are structured.
-4. For Long Answer or Analytical questions on algorithms/proofs (e.g. resolution, alpha-beta pruning, Bayesian inference, HMM), include a fully worked mini-example with actual values and steps, not just an abstract description.
-5. The question must be fully self-contained — a student reading only the question, with no access to the syllabus, must be able to attempt it.
+1. Never mention "syllabus", "unit", "module", "topic", "course outcome", or any numbering (e.g. "Topic 3.2") in the question text.
+2. For Numerical, Case Study, or Application-based questions, invent concrete, realistic data yourself — you may assume suitable data if necessary.
+3. For questions worth 8 or more marks, structure them with 2–3 sub-parts — (i), (ii), (iii) or (a), (b).
+4. For Long Answer or Analytical questions on algorithms/proofs, include a fully worked mini-example with actual values and steps.
+5. The question must be fully self-contained.
 
 Respond with ONLY a JSON array (no markdown, no code fences, no commentary) where each element has this exact shape:
 {
@@ -141,9 +203,9 @@ Respond with ONLY a JSON array (no markdown, no code fences, no commentary) wher
   "marks": ${marks}${isMcq ? ',\n  "options": ["option A", "option B", "option C", "option D"],\n  "correct_answer": "the correct option text"' : ""}
 }`;
 
-    const questions = await generateQuestionsWithGemini(prompt);
+    const questions = await generateQuestionsWithRetry(prompt);
 
-    return new Response(JSON.stringify({ questions }), {
+    return new Response(JSON.stringify({ questions, examples_used: examples.length }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {

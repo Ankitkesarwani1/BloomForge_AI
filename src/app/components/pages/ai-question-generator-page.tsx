@@ -125,7 +125,19 @@ export function AIQuestionGeneratorPage() {
         },
       });
 
-      if (error) throw error;
+      if (error) 
+        {
+          // supabase-js hides the real function error behind a generic message —
+          // pull the actual body out of error.context to see what really happened.
+          let detail = error.message;
+          try {
+            const body = await error.context.json();
+            detail = body.error ?? detail;
+          } catch {
+            /* context wasn't JSON-readable — fall back to the generic message */
+          }
+          throw new Error(detail);
+        }
       if (data?.error) throw new Error(data.error);
 
       const generated: GeneratedQuestion[] = (data?.questions ?? []).map((q: any, i: number) => ({
