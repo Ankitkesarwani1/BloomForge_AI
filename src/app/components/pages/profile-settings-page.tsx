@@ -11,15 +11,29 @@ import {
   Save,
   Camera,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Switch } from "../ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { useTheme } from "../theme-provider";
+import { useAuth } from "../../lib/auth-context";
+import { supabase } from "../../lib/supabase";
 
 export function ProfileSettingsPage() {
   const { theme, setTheme } = useTheme();
+  const { profile } = useAuth();
+  
+  const [formData, setFormData] = useState({
+    firstName: profile?.full_name?.split(" ")[0] || "",
+    lastName: profile?.full_name?.split(" ").slice(1).join(" ") || "",
+    email: profile?.email || "",
+    department: profile?.department || "",
+    designation: "",
+    bio: "",
+    phone: ""
+  });
   const [notifications, setNotifications] = useState({
     emailNotifications: true,
     paperGenerated: true,
@@ -27,6 +41,27 @@ export function ProfileSettingsPage() {
     weeklyReport: false,
     systemUpdates: true,
   });
+
+  const handleSave = async () => {
+    if (!profile?.id) return;
+    
+    // Split full name
+    const full_name = `${formData.firstName} ${formData.lastName}`.trim();
+    
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        full_name,
+        department: formData.department
+      })
+      .eq("id", profile.id);
+
+    if (error) {
+      toast.error("Failed to update profile");
+    } else {
+      toast.success("Profile updated successfully");
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -99,45 +134,46 @@ export function ProfileSettingsPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block mb-2">First Name</label>
-                  <Input defaultValue="Sarah" />
+                  <Input value={formData.firstName} onChange={e => setFormData({...formData, firstName: e.target.value})} placeholder="Sarah" />
                 </div>
                 <div>
                   <label className="block mb-2">Last Name</label>
-                  <Input defaultValue="Johnson" />
+                  <Input value={formData.lastName} onChange={e => setFormData({...formData, lastName: e.target.value})} placeholder="Johnson" />
                 </div>
               </div>
 
               <div>
                 <label className="block mb-2">Email</label>
-                <Input type="email" defaultValue="sarah.johnson@university.edu" />
+                <Input type="email" value={formData.email} disabled className="bg-muted" />
               </div>
 
               <div>
                 <label className="block mb-2">Department</label>
-                <Input defaultValue="Computer Science" />
+                <Input value={formData.department} onChange={e => setFormData({...formData, department: e.target.value})} placeholder="Computer Science" />
               </div>
 
               <div>
                 <label className="block mb-2">Designation</label>
-                <Input defaultValue="Associate Professor" />
+                <Input value={formData.designation} onChange={e => setFormData({...formData, designation: e.target.value})} placeholder="Associate Professor" />
               </div>
 
               <div>
                 <label className="block mb-2">Bio</label>
                 <Textarea
                   rows={4}
-                  defaultValue="Associate Professor with 10+ years of experience in Computer Science education. Specialized in Data Structures and Algorithms."
+                  value={formData.bio} onChange={e => setFormData({...formData, bio: e.target.value})}
+                  placeholder="Associate Professor with 10+ years of experience in Computer Science education. Specialized in Data Structures and Algorithms."
                 />
               </div>
 
               <div>
                 <label className="block mb-2">Phone Number</label>
-                <Input type="tel" defaultValue="+91 98765 43210" />
+                <Input type="tel" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} placeholder="+91 98765 43210" />
               </div>
             </div>
 
             <div className="flex items-center gap-3 pt-4 border-t border-border">
-              <Button>
+              <Button onClick={handleSave}>
                 <Save className="w-4 h-4 mr-2" />
                 Save Changes
               </Button>

@@ -228,7 +228,7 @@ function FormField({
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function AdminPanelPage() {
-  const { session } = useAuth();
+  const { profile } = useAuth();
 
   // ── List state
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -403,35 +403,9 @@ export function AdminPanelPage() {
   async function handleAddUser(e: React.FormEvent) {
     e.preventDefault();
     if (!newUserEmail || !newUserPassword || !newUserName) return;
-    setAddingUser(true);
-    setAddUserError(null);
-
-    // Sign up via Supabase Auth (trigger will create the profile row automatically)
-    const { data, error } = await supabase.auth.signUp({
-      email: newUserEmail.trim(),
-      password: newUserPassword,
-      options: {
-        data: {
-          full_name: newUserName.trim(),
-          role: newUserRole,
-        },
-      },
-    });
-
-    if (error) {
-      setAddUserError(error.message);
-      setAddingUser(false);
-      return;
-    }
-
-    // If the profile row exists (trigger ran), patch department separately
-    if (data.user && newUserDept) {
-      await supabase
-        .from("profiles")
-        .update({ department: newUserDept.trim() })
-        .eq("id", data.user.id);
-    }
-
+    
+    alert("Creating users from the admin panel requires a backend edge function which is not yet implemented. Please register normally via the registration page for now.");
+    
     setAddUserSuccess(true);
     setAddingUser(false);
 

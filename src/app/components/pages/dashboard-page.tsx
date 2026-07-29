@@ -9,6 +9,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from "recharts";
+import { useNavigate } from "react-router";
+import { useAuth } from "../../lib/auth-context";
 
 const stats = [
   { label: "Total Subjects", value: "12", icon: BookOpen, color: "text-primary", bgColor: "bg-primary/10" },
@@ -53,12 +55,15 @@ const recentActivity = [
 ];
 
 export function DashboardPage() {
+  const navigate = useNavigate();
+  const { profile } = useAuth();
+  
   return (
     <div className="space-y-6">
       {/* Header */}
       <div>
         <h1 className="text-3xl font-bold">Dashboard</h1>
-        <p className="text-muted-foreground mt-1">Welcome back, Dr. Sarah Johnson</p>
+        <p className="text-muted-foreground mt-1">Welcome back, {profile?.full_name || "User"}</p>
       </div>
 
       {/* Stats Grid */}
@@ -169,22 +174,22 @@ export function DashboardPage() {
       <div className="bg-card border border-border rounded-xl p-6">
         <h2 className="text-xl font-semibold mb-4">Quick Actions</h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <button className="p-4 border border-border rounded-xl hover:border-primary hover:bg-primary/5 transition-all text-left">
+          <button onClick={() => navigate("/app/ai-generator")} className="p-4 border border-border rounded-xl hover:border-primary hover:bg-primary/5 transition-all text-left">
             <Sparkles className="w-6 h-6 text-primary mb-2" />
             <h3 className="font-semibold">Generate Questions</h3>
             <p className="text-sm text-muted-foreground mt-1">Use AI to create new questions</p>
           </button>
-          <button className="p-4 border border-border rounded-xl hover:border-secondary hover:bg-secondary/5 transition-all text-left">
+          <button onClick={() => navigate("/app/syllabus")} className="p-4 border border-border rounded-xl hover:border-secondary hover:bg-secondary/5 transition-all text-left">
             <BookOpen className="w-6 h-6 text-secondary mb-2" />
             <h3 className="font-semibold">Upload Syllabus</h3>
             <p className="text-sm text-muted-foreground mt-1">Add new course syllabus</p>
           </button>
-          <button className="p-4 border border-border rounded-xl hover:border-accent hover:bg-accent/5 transition-all text-left">
+          <button onClick={() => navigate("/app/paper-builder")} className="p-4 border border-border rounded-xl hover:border-accent hover:bg-accent/5 transition-all text-left">
             <FileText className="w-6 h-6 text-accent mb-2" />
             <h3 className="font-semibold">Build Paper</h3>
             <p className="text-sm text-muted-foreground mt-1">Create question paper</p>
           </button>
-          <button className="p-4 border border-border rounded-xl hover:border-success hover:bg-success/5 transition-all text-left">
+          <button onClick={() => navigate("/app/analytics")} className="p-4 border border-border rounded-xl hover:border-success hover:bg-success/5 transition-all text-left">
             <TrendingUp className="w-6 h-6 text-success mb-2" />
             <h3 className="font-semibold">View Analytics</h3>
             <p className="text-sm text-muted-foreground mt-1">Detailed insights</p>

@@ -50,8 +50,18 @@ const questions = [
 
 export function QuestionBankPage() {
   const [showAddModal, setShowAddModal] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
   const [selectedDifficulty, setSelectedDifficulty] = useState<string | null>(null);
   const [selectedBloom, setSelectedBloom] = useState<string | null>(null);
+
+  const filteredQuestions = questions.filter(q => {
+    if (searchQuery && !q.question.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    if (selectedSubject && q.subject !== selectedSubject) return false;
+    if (selectedDifficulty && q.difficulty !== selectedDifficulty) return false;
+    if (selectedBloom && q.bloom !== selectedBloom) return false;
+    return true;
+  });
 
   return (
     <div className="space-y-6">
@@ -97,15 +107,21 @@ export function QuestionBankPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <input
               type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
               placeholder="Search questions..."
               className="w-full pl-10 pr-4 py-2 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary"
             />
           </div>
-          <select className="px-4 py-2 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary">
+          <select 
+            value={selectedSubject || ""}
+            onChange={e => setSelectedSubject(e.target.value || null)}
+            className="px-4 py-2 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary"
+          >
             <option value="">All Subjects</option>
-            <option>Data Structures</option>
-            <option>Machine Learning</option>
-            <option>Operating Systems</option>
+            <option value="Data Structures">Data Structures</option>
+            <option value="Machine Learning">Machine Learning</option>
+            <option value="Operating Systems">Operating Systems</option>
           </select>
           <select
             value={selectedBloom || ""}
@@ -113,12 +129,12 @@ export function QuestionBankPage() {
             className="px-4 py-2 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary"
           >
             <option value="">All Bloom Levels</option>
-            <option>Remember</option>
-            <option>Understand</option>
-            <option>Apply</option>
-            <option>Analyze</option>
-            <option>Evaluate</option>
-            <option>Create</option>
+            <option value="Remember">Remember</option>
+            <option value="Understand">Understand</option>
+            <option value="Apply">Apply</option>
+            <option value="Analyze">Analyze</option>
+            <option value="Evaluate">Evaluate</option>
+            <option value="Create">Create</option>
           </select>
           <select
             value={selectedDifficulty || ""}
@@ -126,16 +142,16 @@ export function QuestionBankPage() {
             className="px-4 py-2 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary"
           >
             <option value="">All Difficulties</option>
-            <option>Easy</option>
-            <option>Medium</option>
-            <option>Hard</option>
+            <option value="Easy">Easy</option>
+            <option value="Medium">Medium</option>
+            <option value="Hard">Hard</option>
           </select>
         </div>
       </div>
 
       {/* Questions List */}
       <div className="space-y-3">
-        {questions.map((q) => (
+        {filteredQuestions.map((q) => (
           <div key={q.id} className="bg-card border border-border rounded-xl p-4 hover:border-primary/50 transition-all">
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">

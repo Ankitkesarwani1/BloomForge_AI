@@ -13,6 +13,7 @@ import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Progress } from "../ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { toast } from "sonner";
 
 const sampleQuestions = [
   {
@@ -96,7 +97,7 @@ export function AnswerKeyGeneratorPage() {
             <Sparkles className="w-4 h-4 mr-2" />
             {generating ? "Generating..." : "Generate All"}
           </Button>
-          <Button>
+          <Button onClick={() => toast.success("Download started (Mock)")}>
             <Download className="w-4 h-4 mr-2" />
             Download Answer Key
           </Button>
@@ -112,7 +113,7 @@ export function AnswerKeyGeneratorPage() {
           </div>
           <Progress value={progress} className="h-2" />
           <p className="text-sm text-muted-foreground mt-2">
-            Processing question {Math.floor(progress / 33) + 1} of 3
+            Processing question {Math.min(Math.floor(progress / 33) + 1, 3)} of 3
           </p>
         </div>
       )}
@@ -237,9 +238,9 @@ export function AnswerKeyGeneratorPage() {
               <TabsContent value="answer" className="space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-semibold">Model Answer</h3>
-                  <Button variant="ghost" size="sm">
+                  <Button variant="outline" size="sm" onClick={() => toast("Edit modal opened (Mock)")}>
                     <Edit className="w-4 h-4 mr-2" />
-                    Edit
+                    Edit Answer
                   </Button>
                 </div>
                 <div className="bg-muted rounded-xl p-4">

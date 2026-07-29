@@ -1,13 +1,29 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { Brain, Mail, ArrowLeft } from "lucide-react";
+import { supabase } from "../../lib/supabase";
+import { toast } from "sonner";
 
 export function ForgotPasswordPage() {
+  const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitted(true);
+    if (!email) return;
+    
+    setLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    setLoading(false);
+
+    if (error) {
+      toast.error(error.message);
+    } else {
+      setSubmitted(true);
+    }
   };
 
   return (
@@ -38,6 +54,8 @@ export function ForgotPasswordPage() {
               <input
                 id="email"
                 type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 bg-input-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary"
                 placeholder="professor@university.edu"
                 required
@@ -47,9 +65,10 @@ export function ForgotPasswordPage() {
 
           <button
             type="submit"
-            className="w-full py-3 bg-primary text-primary-foreground rounded-xl hover:opacity-90 transition-opacity"
+            disabled={loading}
+            className="w-full py-3 bg-primary text-primary-foreground rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50"
           >
-            Send reset link
+            {loading ? "Sending..." : "Send reset link"}
           </button>
 
           <Link
