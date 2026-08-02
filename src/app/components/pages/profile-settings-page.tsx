@@ -1,15 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   User,
-  Mail,
   Lock,
-  Bell,
   Moon,
   Sun,
   Shield,
   Key,
   Save,
   Camera,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
@@ -24,16 +23,34 @@ import { supabase } from "../../lib/supabase";
 export function ProfileSettingsPage() {
   const { theme, setTheme } = useTheme();
   const { profile } = useAuth();
-  
+
+  const [loading, setLoading] = useState(false);
+  const [passwordLoading, setPasswordLoading] = useState(false);
+
+  // Profile Form State
   const [formData, setFormData] = useState({
-    firstName: profile?.full_name?.split(" ")[0] || "",
-    lastName: profile?.full_name?.split(" ").slice(1).join(" ") || "",
-    email: profile?.email || "",
-    department: profile?.department || "",
+    firstName: "",
+    lastName: "",
+    email: "",
+    department: "",
     designation: "",
     bio: "",
-    phone: ""
+    phone: "",
   });
+
+  // Account Form State
+  const [accountData, setAccountData] = useState({
+    username: "",
+    email: "",
+    employeeId: "",
+  });
+
+  // Password Update State
+  const [passwordData, setPasswordData] = useState({
+    newPassword: "",
+    confirmPassword: "",
+  });
+
   const [notifications, setNotifications] = useState({
     emailNotifications: true,
     paperGenerated: true,
@@ -42,24 +59,121 @@ export function ProfileSettingsPage() {
     systemUpdates: true,
   });
 
-  const handleSave = async () => {
+  // Load existing profile details into input states
+  useEffect(() => {
+    if (profile) {
+      const names = (profile.full_name || "").split(" ");
+      const firstName = names[0] || "";
+      const lastName = names.slice(1).join(" ") || "";
+
+      setFormData({
+        firstName,
+        lastName,
+        email: profile.email || "",
+        department: profile.department || "",
+        designation: (profile as any).designation || "",
+        bio: (profile as any).bio || "",
+        phone: (profile as any).phone || "",
+      });
+
+      setAccountData({
+        username: (profile as any).username || "",
+        email: profile.email || "",
+        employeeId: (profile as any).employee_id || "",
+      });
+    }
+  }, [profile]);
+
+  // Handle Save Profile Details
+  const handleSaveProfile = async () => {
     if (!profile?.id) return;
-    
-    // Split full name
+    setLoading(true);
+
     const full_name = `${formData.firstName} ${formData.lastName}`.trim();
-    
+
     const { error } = await supabase
       .from("profiles")
       .update({
         full_name,
-        department: formData.department
+        department: formData.department,
+        designation: formData.designation,
+        bio: formData.bio,
+        phone: formData.phone,
+        last_active: new Date().toISOString(),
       })
       .eq("id", profile.id);
 
+    setLoading(false);
+
     if (error) {
-      toast.error("Failed to update profile");
+      toast.error("Failed to update profile: " + error.message);
     } else {
       toast.success("Profile updated successfully");
+    }
+  };
+
+  // Handle Save Account Details
+  const handleSaveAccount = async () => {
+    if (!profile?.id) return;
+    setLoading(true);
+
+    // 1. Update Username and Employee ID in database table
+    const { error: dbError } = await supabase
+      .from("profiles")
+      .update({
+        username: accountData.username,
+        employee_id: accountData.employeeId,
+      })
+      .eq("id", profile.id);
+
+    if (dbError) {
+      setLoading(false);
+      toast.error("Failed to update account information: " + dbError.message);
+      return;
+    }
+
+    // 2. Update Auth Email if changed
+    if (accountData.email !== profile.email) {
+      const { error: authError } = await supabase.auth.updateUser({
+        email: accountData.email,
+      });
+
+      if (authError) {
+        toast.error("Account updated, but failed to update email: " + authError.message);
+      } else {
+        toast.success("Account updated. Verification email sent for new email.");
+      }
+    } else {
+      toast.success("Account information updated successfully");
+    }
+
+    setLoading(false);
+  };
+
+  // Handle Update Password
+  const handleUpdatePassword = async () => {
+    if (!passwordData.newPassword) {
+      toast.error("Please enter a new password");
+      return;
+    }
+    if (passwordData.newPassword !== passwordData.confirmPassword) {
+      toast.error("New passwords do not match");
+      return;
+    }
+
+    setPasswordLoading(true);
+
+    const { error } = await supabase.auth.updateUser({
+      password: passwordData.newPassword,
+    });
+
+    setPasswordLoading(false);
+
+    if (error) {
+      toast.error("Failed to update password: " + error.message);
+    } else {
+      toast.success("Password updated successfully");
+      setPasswordData({ newPassword: "", confirmPassword: "" });
     }
   };
 
@@ -133,101 +247,153 @@ export function ProfileSettingsPage() {
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block mb-2">First Name</label>
-                  <Input value={formData.firstName} onChange={e => setFormData({...formData, firstName: e.target.value})} placeholder="Sarah" />
+                  <label className="block text-sm font-medium mb-2">First Name</label>
+                  <Input
+                    value={formData.firstName}
+                    onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+                    placeholder="First Name"
+                  />
                 </div>
                 <div>
-                  <label className="block mb-2">Last Name</label>
-                  <Input value={formData.lastName} onChange={e => setFormData({...formData, lastName: e.target.value})} placeholder="Johnson" />
+                  <label className="block text-sm font-medium mb-2">Last Name</label>
+                  <Input
+                    value={formData.lastName}
+                    onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                    placeholder="Last Name"
+                  />
                 </div>
               </div>
 
               <div>
-                <label className="block mb-2">Email</label>
+                <label className="block text-sm font-medium mb-2">Email</label>
                 <Input type="email" value={formData.email} disabled className="bg-muted" />
               </div>
 
               <div>
-                <label className="block mb-2">Department</label>
-                <Input value={formData.department} onChange={e => setFormData({...formData, department: e.target.value})} placeholder="Computer Science" />
-              </div>
-
-              <div>
-                <label className="block mb-2">Designation</label>
-                <Input value={formData.designation} onChange={e => setFormData({...formData, designation: e.target.value})} placeholder="Associate Professor" />
-              </div>
-
-              <div>
-                <label className="block mb-2">Bio</label>
-                <Textarea
-                  rows={4}
-                  value={formData.bio} onChange={e => setFormData({...formData, bio: e.target.value})}
-                  placeholder="Associate Professor with 10+ years of experience in Computer Science education. Specialized in Data Structures and Algorithms."
+                <label className="block text-sm font-medium mb-2">Department</label>
+                <Input
+                  value={formData.department}
+                  onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                  placeholder="Computer Science"
                 />
               </div>
 
               <div>
-                <label className="block mb-2">Phone Number</label>
-                <Input type="tel" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} placeholder="+91 98765 43210" />
+                <label className="block text-sm font-medium mb-2">Designation</label>
+                <Input
+                  value={formData.designation}
+                  onChange={(e) => setFormData({ ...formData, designation: e.target.value })}
+                  placeholder="Associate Professor"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Bio</label>
+                <Textarea
+                  rows={4}
+                  value={formData.bio}
+                  onChange={(e) => setFormData({ ...formData, bio: e.target.value })}
+                  placeholder="Share details about your academic focus or teaching experience..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Phone Number</label>
+                <Input
+                  type="tel"
+                  value={formData.phone}
+                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  placeholder="+91 98765 43210"
+                />
               </div>
             </div>
 
             <div className="flex items-center gap-3 pt-4 border-t border-border">
-              <Button onClick={handleSave}>
-                <Save className="w-4 h-4 mr-2" />
+              <Button onClick={handleSaveProfile} disabled={loading}>
+                {loading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4 mr-2" />
+                )}
                 Save Changes
               </Button>
-              <Button variant="outline">Cancel</Button>
             </div>
           </TabsContent>
 
           {/* Account Tab */}
           <TabsContent value="account" className="p-6 space-y-6">
             <div className="space-y-4">
-              <h3 className="font-semibold">Account Information</h3>
-              <div>
-                <label className="block mb-2">Username</label>
-                <Input defaultValue="sarah.johnson" />
-              </div>
-              <div>
-                <label className="block mb-2">Email Address</label>
-                <div className="flex items-center gap-3">
-                  <Input type="email" defaultValue="sarah.johnson@university.edu" />
-                  <Button variant="outline">Verify</Button>
-                </div>
-              </div>
-              <div>
-                <label className="block mb-2">Employee ID</label>
-                <Input defaultValue="EMP-2024-CS-042" disabled />
-              </div>
-            </div>
+              <h3 className="font-semibold text-lg">Account Information</h3>
 
-            <div className="space-y-4 pt-6 border-t border-border">
-              <h3 className="font-semibold">Change Password</h3>
               <div>
-                <label className="block mb-2">Current Password</label>
-                <Input type="password" placeholder="Enter current password" />
+                <label className="block text-sm font-medium mb-2">Username</label>
+                <Input
+                  value={accountData.username}
+                  onChange={(e) => setAccountData({ ...accountData, username: e.target.value })}
+                  placeholder="e.g. taran_25"
+                />
               </div>
+
               <div>
-                <label className="block mb-2">New Password</label>
-                <Input type="password" placeholder="Enter new password" />
+                <label className="block text-sm font-medium mb-2">Email Address</label>
+                <Input
+                  type="email"
+                  value={accountData.email}
+                  onChange={(e) => setAccountData({ ...accountData, email: e.target.value })}
+                  placeholder="your.email@university.edu"
+                />
               </div>
+
               <div>
-                <label className="block mb-2">Confirm New Password</label>
-                <Input type="password" placeholder="Confirm new password" />
+                <label className="block text-sm font-medium mb-2">Employee ID</label>
+                <Input
+                  value={accountData.employeeId}
+                  onChange={(e) => setAccountData({ ...accountData, employeeId: e.target.value })}
+                  placeholder="EMP-2026-CS-01"
+                />
               </div>
-              <Button>
-                <Lock className="w-4 h-4 mr-2" />
-                Update Password
+
+              <Button onClick={handleSaveAccount} disabled={loading}>
+                {loading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4 mr-2" />
+                )}
+                Save Account Info
               </Button>
             </div>
 
-            <div className="pt-6 border-t border-border">
-              <h3 className="font-semibold text-destructive mb-2">Danger Zone</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Once you delete your account, there is no going back. Please be certain.
-              </p>
-              <Button variant="destructive">Delete Account</Button>
+            <div className="space-y-4 pt-6 border-t border-border">
+              <h3 className="font-semibold text-lg">Change Password</h3>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">New Password</label>
+                <Input
+                  type="password"
+                  value={passwordData.newPassword}
+                  onChange={(e) => setPasswordData({ ...passwordData, newPassword: e.target.value })}
+                  placeholder="Enter new password"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Confirm New Password</label>
+                <Input
+                  type="password"
+                  value={passwordData.confirmPassword}
+                  onChange={(e) => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
+                  placeholder="Confirm new password"
+                />
+              </div>
+
+              <Button onClick={handleUpdatePassword} disabled={passwordLoading}>
+                {passwordLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Lock className="w-4 h-4 mr-2" />
+                )}
+                Update Password
+              </Button>
             </div>
           </TabsContent>
 
@@ -236,8 +402,7 @@ export function ProfileSettingsPage() {
             <div className="space-y-4">
               <h3 className="font-semibold">Theme</h3>
               <p className="text-sm text-muted-foreground">
-                Choose how GenQGen looks to you. Select a single theme, or sync with your
-                system.
+                Choose how the interface looks to you. Select a theme or sync with system settings.
               </p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <button
@@ -298,28 +463,6 @@ export function ProfileSettingsPage() {
                 </button>
               </div>
             </div>
-
-            <div className="space-y-4 pt-6 border-t border-border">
-              <h3 className="font-semibold">Display</h3>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold">Compact Mode</p>
-                  <p className="text-sm text-muted-foreground">
-                    Reduce spacing between elements
-                  </p>
-                </div>
-                <Switch />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold">Show Animations</p>
-                  <p className="text-sm text-muted-foreground">
-                    Enable interface animations
-                  </p>
-                </div>
-                <Switch defaultChecked />
-              </div>
-            </div>
           </TabsContent>
 
           {/* Notifications Tab */}
@@ -330,9 +473,7 @@ export function ProfileSettingsPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-semibold">Enable Email Notifications</p>
-                    <p className="text-sm text-muted-foreground">
-                      Receive notifications via email
-                    </p>
+                    <p className="text-sm text-muted-foreground">Receive notifications via email</p>
                   </div>
                   <Switch
                     checked={notifications.emailNotifications}
@@ -344,9 +485,7 @@ export function ProfileSettingsPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-semibold">Paper Generated</p>
-                    <p className="text-sm text-muted-foreground">
-                      When a question paper is successfully generated
-                    </p>
+                    <p className="text-sm text-muted-foreground">When a question paper is successfully generated</p>
                   </div>
                   <Switch
                     checked={notifications.paperGenerated}
@@ -355,56 +494,7 @@ export function ProfileSettingsPage() {
                     }
                   />
                 </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold">Approval Needed</p>
-                    <p className="text-sm text-muted-foreground">
-                      When your approval is required
-                    </p>
-                  </div>
-                  <Switch
-                    checked={notifications.approvalNeeded}
-                    onCheckedChange={(checked) =>
-                      setNotifications({ ...notifications, approvalNeeded: checked })
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold">Weekly Report</p>
-                    <p className="text-sm text-muted-foreground">
-                      Get weekly activity summary
-                    </p>
-                  </div>
-                  <Switch
-                    checked={notifications.weeklyReport}
-                    onCheckedChange={(checked) =>
-                      setNotifications({ ...notifications, weeklyReport: checked })
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold">System Updates</p>
-                    <p className="text-sm text-muted-foreground">
-                      Important system announcements
-                    </p>
-                  </div>
-                  <Switch
-                    checked={notifications.systemUpdates}
-                    onCheckedChange={(checked) =>
-                      setNotifications({ ...notifications, systemUpdates: checked })
-                    }
-                  />
-                </div>
               </div>
-            </div>
-
-            <div className="flex items-center gap-3 pt-4 border-t border-border">
-              <Button>
-                <Save className="w-4 h-4 mr-2" />
-                Save Preferences
-              </Button>
             </div>
           </TabsContent>
 
@@ -422,53 +512,6 @@ export function ProfileSettingsPage() {
                   <Button className="mt-3">Enable Two-Factor Authentication</Button>
                 </div>
               </div>
-            </div>
-
-            <div className="space-y-4 pt-6 border-t border-border">
-              <h3 className="font-semibold">Active Sessions</h3>
-              <div className="space-y-3">
-                <div className="flex items-start justify-between p-4 border border-border rounded-xl">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 bg-primary/10 rounded-lg">
-                      <User className="w-5 h-5 text-primary" />
-                    </div>
-                    <div>
-                      <p className="font-semibold">Windows - Chrome</p>
-                      <p className="text-sm text-muted-foreground">India • 192.168.1.1</p>
-                      <p className="text-xs text-muted-foreground mt-1">Active now</p>
-                    </div>
-                  </div>
-                  <span className="px-2 py-1 bg-success/10 text-success rounded-lg text-xs font-semibold">
-                    Current
-                  </span>
-                </div>
-                <div className="flex items-start justify-between p-4 border border-border rounded-xl">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 bg-muted rounded-lg">
-                      <User className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <p className="font-semibold">iPhone - Safari</p>
-                      <p className="text-sm text-muted-foreground">India • 192.168.1.105</p>
-                      <p className="text-xs text-muted-foreground mt-1">2 hours ago</p>
-                    </div>
-                  </div>
-                  <Button variant="outline" size="sm">
-                    Revoke
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4 pt-6 border-t border-border">
-              <h3 className="font-semibold">API Access</h3>
-              <p className="text-sm text-muted-foreground">
-                Manage API keys for programmatic access
-              </p>
-              <Button variant="outline">
-                <Key className="w-4 h-4 mr-2" />
-                Generate API Key
-              </Button>
             </div>
           </TabsContent>
         </Tabs>

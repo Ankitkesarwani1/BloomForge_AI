@@ -22,7 +22,7 @@ const bloomToEnum: Record<string, string> = {
 };
 const difficultyToEnum: Record<string, string> = { Easy: "easy", Medium: "medium", Hard: "hard" };
 
-interface Subject { id: string; subject: string; code: string; }
+interface Subject { id: string; subject: string; code: string; subjectFk: string | null; }
 interface UnitOption { id: string; unit_number: number; title: string; }
 interface GeneratedQuestion {
   localId: number;
@@ -33,7 +33,25 @@ interface GeneratedQuestion {
   marks: number;
   options?: string[];
   correct_answer?: string;
+  // Captured at generation time so "Save to Bank" always saves against the
+  // subject/unit the question was actually generated for — even if the user
+  // has since changed the dropdowns, switched tabs, and come back.
+  // syllabusId is syllabi.id (used to filter units). subjectFk is the value of
+  // syllabi.subject_id — the actual row in the `subjects` table that
+  // questions.subject_id's foreign key points to. These are two different
+  // tables in this schema, so both need to travel with the question.
+  syllabusId: string;
+  subjectFk: string | null;
+  unitId: string;
 }
+
+// Module-level cache: this survives the AIQuestionGeneratorPage component being
+// unmounted and remounted (e.g. the parent tab/router swaps it out when the user
+// switches tabs), because the module itself stays loaded in memory. It resets
+// only on a full page refresh, which matches "must still be present until I
+// refresh the tab."
+let cachedQuestions: GeneratedQuestion[] = [];
+let cachedSavedIds: Set<number> = new Set();
 
 export function AIQuestionGeneratorPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -51,10 +69,20 @@ export function AIQuestionGeneratorPage() {
 
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
-  const [questions, setQuestions] = useState<GeneratedQuestion[]>([]);
+  const [questions, setQuestions] = useState<GeneratedQuestion[]>(cachedQuestions);
 
-  const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
+  const [savedIds, setSavedIds] = useState<Set<number>>(cachedSavedIds);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+
+  // Keep the module-level cache in sync whenever local state changes, so
+  // whatever's on screen right now is what reappears after a tab switch.
+  useEffect(() => {
+    cachedQuestions = questions;
+  }, [questions]);
+
+  useEffect(() => {
+    cachedSavedIds = savedIds;
+  }, [savedIds]);
 
   // Load subjects (only fully-parsed syllabi have embeddings available)
   useEffect(() => {
@@ -62,14 +90,14 @@ export function AIQuestionGeneratorPage() {
       setLoadingSubjects(true);
       const { data, error } = await supabase
         .from("syllabi")
-        .select("id, subject, code")
+        .select("id, subject, code, subject_id")
         .eq("status", "parsed")
         .order("subject", { ascending: true });
 
       if (error) {
         console.error("Error loading subjects:", error);
       } else if (data && data.length > 0) {
-        setSubjects(data);
+        setSubjects(data.map((row) => ({ id: row.id, subject: row.subject, code: row.code, subjectFk: row.subject_id })));
         setSelectedSyllabusId(data[0].id);
       }
       setLoadingSubjects(false);
@@ -149,6 +177,9 @@ export function AIQuestionGeneratorPage() {
         marks: q.marks ?? marks,
         options: q.options,
         correct_answer: q.correct_answer,
+        syllabusId: selectedSyllabusId,
+        subjectFk: subjects.find((s) => s.id === selectedSyllabusId)?.subjectFk ?? null,
+        unitId: selectedUnitId,
       }));
 
       setQuestions(generated);
@@ -162,13 +193,25 @@ export function AIQuestionGeneratorPage() {
   };
 
   const handleSaveToBank = async (q: GeneratedQuestion) => {
+    // questions.subject_id is a foreign key into the `subjects` table, not
+    // `syllabi` — this syllabus's syllabi.subject_id column is what needs to
+    // go here. If it's missing, the syllabus record itself needs fixing
+    // (its subject_id needs to be set) before this question can be saved.
+    if (!q.subjectFk) {
+      alert(
+        "This syllabus isn't linked to a subject record (syllabi.subject_id is empty), so this question can't be saved yet. Ask an admin to link this syllabus to a subject."
+      );
+      return;
+    }
     try {
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr || !userData?.user) throw new Error("You must be signed in to save questions.");
 
       const { error } = await supabase.from("questions").insert({
-        subject_id: selectedSyllabusId,
-        unit_id: selectedUnitId,
+        // Use the subject/unit captured when this question was generated, not
+        // whatever the dropdowns currently show — they may have changed since.
+        subject_id: q.subjectFk,
+        unit_id: q.unitId,
         topic_id: null,
         question_text: q.question,
         question_type: questionTypeToEnum[q.type] ?? "short_answer",

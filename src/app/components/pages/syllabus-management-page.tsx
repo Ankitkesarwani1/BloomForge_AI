@@ -10,6 +10,16 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 
+// Per-unit breakdown behind the aggregate coverage %, used to power the
+// hover tooltip on the coverage bar so teachers can see which specific
+// units still need approved questions.
+interface UnitCoverage {
+  unitId: string;
+  unitNumber: number;
+  title: string;
+  questionCount: number;
+}
+
 interface Syllabus {
   id: string;
   subject: string;
@@ -18,7 +28,12 @@ interface Syllabus {
   topics: number;
   upload_date: string;
   status: "parsing" | "parsed" | "incomplete" | "error";
-  coverage: number;
+  // Computed live from the question bank (approved questions per unit) each
+  // time syllabi are fetched — null means this syllabus has no units yet to
+  // measure coverage against, distinct from 0% (has units, none covered).
+  coverage: number | null;
+  // Same live computation, broken down per unit and sorted by unit_number.
+  unitCoverage: UnitCoverage[];
   file_path: string;
   file_url: string;
 }
@@ -35,6 +50,15 @@ interface MissingHoursUnit { id: string; unitNumber: number; title: string; hour
 
 const TYPICAL_HOURS_MIN = 20;
 const TYPICAL_HOURS_MAX = 80;
+
+// Coverage health thresholds for the per-unit tooltip dots: 0 questions is
+// uncovered (red), 1–2 is thin coverage (amber), 3+ is considered healthy (green).
+const WEAK_COVERAGE_MAX_QUESTIONS = 2;
+const coverageHealthColor = (questionCount: number) => {
+  if (questionCount === 0) return "bg-red-500";
+  if (questionCount <= WEAK_COVERAGE_MAX_QUESTIONS) return "bg-amber-500";
+  return "bg-green-500";
+};
 
 export function SyllabusManagementPage() {
   const [syllabiList, setSyllabiList] = useState<Syllabus[]>([]);
@@ -63,21 +87,90 @@ export function SyllabusManagementPage() {
   const [savingHours, setSavingHours] = useState(false);
   const [fetchingMissingHours, setFetchingMissingHours] = useState(false);
 
+  // Coverage Bar Tooltip State
+  // Positioned with viewport coordinates (position: fixed) rather than being
+  // nested inside the table, so it isn't clipped by the table's overflow-x-auto wrapper.
+  const [hoveredCoverage, setHoveredCoverage] = useState<{ syllabusId: string; top: number; left: number } | null>(null);
+
   useEffect(() => {
     fetchSyllabi();
   }, []);
 
+  // Coverage % = (units in this syllabus with >=1 approved question) / (total units), computed
+  // fresh from the question bank every time — never read from/written to the stored
+  // `coverage` column, so it can't drift stale as questions get added, approved, or deleted.
+  //
+  // Also returns the per-unit question counts behind that %, so the UI can show teachers
+  // exactly which units are pulling the overall number down (via the coverage bar tooltip),
+  // fetched eagerly here for every syllabus rather than on-demand per hover.
+  const computeSyllabusCoverage = async (): Promise<{
+    overallBySyllabus: Record<string, number | null>;
+    unitsBySyllabus: Record<string, UnitCoverage[]>;
+  }> => {
+    const [{ data: unitsData, error: unitsError }, { data: questionsData, error: questionsError }] = await Promise.all([
+      supabase.from("units").select("id, syllabus_id, unit_number, title"),
+      supabase.from("questions").select("unit_id").eq("approved", true),
+    ]);
+
+    if (unitsError) {
+      console.error("Error fetching units for coverage:", unitsError);
+      return { overallBySyllabus: {}, unitsBySyllabus: {} };
+    }
+    if (questionsError) {
+      console.error("Error fetching approved questions for coverage:", questionsError);
+      return { overallBySyllabus: {}, unitsBySyllabus: {} };
+    }
+
+    // Count approved questions per unit (not just covered/not), so the tooltip can
+    // show real numbers rather than a binary yes/no.
+    const questionCountByUnit = new Map<string, number>();
+    for (const q of questionsData ?? []) {
+      if (!q.unit_id) continue;
+      questionCountByUnit.set(q.unit_id, (questionCountByUnit.get(q.unit_id) ?? 0) + 1);
+    }
+
+    const unitsBySyllabus = new Map<string, UnitCoverage[]>();
+    for (const unit of unitsData ?? []) {
+      const list = unitsBySyllabus.get(unit.syllabus_id) ?? [];
+      list.push({
+        unitId: unit.id,
+        unitNumber: unit.unit_number,
+        title: unit.title,
+        questionCount: questionCountByUnit.get(unit.id) ?? 0,
+      });
+      unitsBySyllabus.set(unit.syllabus_id, list);
+    }
+
+    const overallBySyllabus: Record<string, number | null> = {};
+    const unitsBySyllabusResult: Record<string, UnitCoverage[]> = {};
+    for (const [syllabusId, unitList] of unitsBySyllabus.entries()) {
+      unitList.sort((a, b) => a.unitNumber - b.unitNumber);
+      unitsBySyllabusResult[syllabusId] = unitList;
+
+      const total = unitList.length;
+      const covered = unitList.filter((u) => u.questionCount > 0).length;
+      overallBySyllabus[syllabusId] = total === 0 ? null : Math.round((covered / total) * 100);
+    }
+
+    return { overallBySyllabus, unitsBySyllabus: unitsBySyllabusResult };
+  };
+
   const fetchSyllabi = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("syllabi")
-      .select("*")
-      .order("created_at", { ascending: false });
+    const [{ data, error }, { overallBySyllabus, unitsBySyllabus }] = await Promise.all([
+      supabase.from("syllabi").select("*").order("created_at", { ascending: false }),
+      computeSyllabusCoverage(),
+    ]);
 
     if (error) {
       console.error("Error fetching syllabi:", error);
     } else {
-      setSyllabiList(data || []);
+      const withCoverage = (data || []).map((syllabus) => ({
+        ...syllabus,
+        coverage: overallBySyllabus[syllabus.id] ?? null,
+        unitCoverage: unitsBySyllabus[syllabus.id] ?? [],
+      }));
+      setSyllabiList(withCoverage);
     }
     setLoading(false);
   };
@@ -334,6 +427,31 @@ export function SyllabusManagementPage() {
   };
 
   // Handle Upload PDF & Add Record
+  // syllabi.subject_id is a foreign key into the `subjects` table — it was
+  // never being populated on upload (only the free-text `subject`/`code`
+  // columns were), which is why every new syllabus ended up unlinked and any
+  // question saved against it violated questions.subject_id's FK. This looks
+  // for an existing subjects row with the same code (so multiple
+  // syllabi/sections for one course share a single subject record instead of
+  // creating duplicates), and creates one if none exists.
+  const resolveSubjectId = async (subjectName: string, subjectCode: string): Promise<string> => {
+    const { data: existingRows, error: findError } = await supabase
+      .from("subjects")
+      .select("id")
+      .eq("code", subjectCode)
+      .limit(1);
+    if (findError) throw findError;
+    if (existingRows && existingRows.length > 0) return existingRows[0].id;
+
+    const { data: created, error: createError } = await supabase
+      .from("subjects")
+      .insert({ code: subjectCode, name: subjectName })
+      .select("id")
+      .single();
+    if (createError) throw createError;
+    return created.id;
+  };
+
   const handleUploadAndParse = async () => {
     if (!selectedFile || !subject || !code) {
       alert("Please fill in subject details and upload a PDF.");
@@ -375,9 +493,20 @@ export function SyllabusManagementPage() {
         .from('syllabi_pdfs')
         .getPublicUrl(filePath);
 
+      const subjectId = await resolveSubjectId(subject, code);
+
+      // Get the currently authenticated user so we can stamp the syllabus
+      // with who uploaded it. getUser() re-validates against Supabase Auth
+      // rather than trusting a possibly-stale local session.
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData?.user) {
+        throw new Error("You must be signed in to upload a syllabus.");
+      }
+
       const newEntry = {
         subject,
         code,
+        subject_id: subjectId,
         // Legacy counters remain populated for existing screens.
         units: parseResults.units.length,
         topics: parseResults.topics,
@@ -390,6 +519,7 @@ export function SyllabusManagementPage() {
         total_hours: parseResults.totalHours,
         course_objectives: parseResults.courseObjectives,
         course_outcomes: parseResults.courseOutcomes,
+        uploaded_by: userData.user.id,
       };
 
       const { data: createdSyllabus, error: dbError } = await supabase.from('syllabi').insert(newEntry).select('id').single();
@@ -480,11 +610,13 @@ export function SyllabusManagementPage() {
       }
 
       // Update record in database
+      const editSubjectId = await resolveSubjectId(editingSyllabus.subject, editingSyllabus.code);
       const { error } = await supabase
         .from('syllabi')
         .update({
           subject: editingSyllabus.subject,
           code: editingSyllabus.code,
+          subject_id: editSubjectId,
           units: updatedUnits,
           topics: updatedTopics,
           file_path: updatedFilePath,
@@ -663,15 +795,30 @@ export function SyllabusManagementPage() {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 bg-muted rounded-full h-2 w-20">
-                          <div
-                            className="bg-primary h-2 rounded-full"
-                            style={{ width: `${syllabus.coverage}%` }}
-                          ></div>
+                      {syllabus.coverage === null ? (
+                        <span className="text-sm text-muted-foreground" title="No units parsed yet">
+                          —
+                        </span>
+                      ) : (
+                        <div
+                          className="flex items-center gap-2 w-fit cursor-help"
+                          onMouseEnter={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setHoveredCoverage({ syllabusId: syllabus.id, top: rect.bottom + 8, left: rect.left });
+                          }}
+                          onMouseLeave={() =>
+                            setHoveredCoverage((prev) => (prev?.syllabusId === syllabus.id ? null : prev))
+                          }
+                        >
+                          <div className="flex-1 bg-muted rounded-full h-2 w-20">
+                            <div
+                              className="bg-primary h-2 rounded-full"
+                              style={{ width: `${syllabus.coverage}%` }}
+                            ></div>
+                          </div>
+                          <span className="text-sm font-medium">{syllabus.coverage}%</span>
                         </div>
-                        <span className="text-sm font-medium">{syllabus.coverage}%</span>
-                      </div>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
@@ -722,6 +869,46 @@ export function SyllabusManagementPage() {
           </table>
         </div>
       </div>
+
+      {/* Coverage Bar Tooltip — per-unit breakdown behind the aggregate % */}
+      {hoveredCoverage && (() => {
+        const syllabus = syllabiList.find((item) => item.id === hoveredCoverage.syllabusId);
+        if (!syllabus) return null;
+        const units = syllabus.unitCoverage;
+        const coveredCount = units.filter((unit) => unit.questionCount > 0).length;
+
+        return (
+          <div
+            className="fixed z-50 w-72 bg-popover border border-border rounded-xl shadow-lg p-3 pointer-events-none"
+            style={{ top: hoveredCoverage.top, left: hoveredCoverage.left }}
+          >
+            <p className="text-xs font-semibold mb-2">
+              {syllabus.subject} — {coveredCount} of {units.length} unit{units.length === 1 ? "" : "s"} covered
+            </p>
+            {units.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No unit data available.</p>
+            ) : (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {units.map((unit) => (
+                  <div key={unit.unitId} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${coverageHealthColor(unit.questionCount)}`}
+                      />
+                      <span className="truncate">
+                        Unit {unit.unitNumber}: {unit.title}
+                      </span>
+                    </span>
+                    <span className="text-muted-foreground flex-shrink-0">
+                      {unit.questionCount} {unit.questionCount === 1 ? "question" : "questions"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Upload Modal */}
       {showUploadModal && (
