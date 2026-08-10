@@ -106,8 +106,16 @@ export function TopNav() {
               onClick={() => setShowProfile(!showProfile)}
               className="flex items-center gap-2 p-2 hover:bg-accent rounded-xl transition-colors"
             >
-              <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center">
-                <User className="w-4 h-4 text-white" />
+              <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center overflow-hidden">
+                {profile?.avatar_url ? (
+                  <img
+                    src={profile.avatar_url}
+                    alt={profile.full_name}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <User className="w-4 h-4 text-white" />
+                )}
               </div>
               <div className="text-left hidden sm:block">
                 <p className="text-sm font-medium">{profile?.full_name || "Loading…"}</p>

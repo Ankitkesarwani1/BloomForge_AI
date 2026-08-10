@@ -7,20 +7,28 @@ const bloomLevels = ["Remember", "Understand", "Apply", "Analyze", "Evaluate", "
 const questionTypes = ["MCQ", "Short Answer", "Long Answer", "Numerical", "Case Study", "Application Based", "Analytical"];
 const difficultyLevels = ["Easy", "Medium", "Hard"];
 
-const questionTypeToEnum: Record<string, string> = {
-  "MCQ": "mcq",
-  "Short Answer": "short_answer",
-  "Long Answer": "long_answer",
-  "Numerical": "numerical",
-  "Case Study": "case_study",
-  "Application Based": "application",
-  "Analytical": "analytical",
+const enumToQuestionType: Record<string, string> = {
+  mcq: "MCQ",
+  short_answer: "Short Answer",
+  long_answer: "Long Answer",
+  numerical: "Numerical",
+  case_study: "Case Study",
+  application: "Application Based",
+  analytical: "Analytical",
 };
-const bloomToEnum: Record<string, string> = {
-  Remember: "remember", Understand: "understand", Apply: "apply",
-  Analyze: "analyze", Evaluate: "evaluate", Create: "create",
+const enumToBloom: Record<string, string> = {
+  remember: "Remember",
+  understand: "Understand",
+  apply: "Apply",
+  analyze: "Analyze",
+  evaluate: "Evaluate",
+  create: "Create",
 };
-const difficultyToEnum: Record<string, string> = { Easy: "easy", Medium: "medium", Hard: "hard" };
+const enumToDifficulty: Record<string, string> = {
+  easy: "Easy",
+  medium: "Medium",
+  hard: "Hard",
+};
 
 interface Subject { id: string; subject: string; code: string; subjectFk: string | null; }
 interface UnitOption { id: string; unit_number: number; title: string; }
@@ -33,25 +41,58 @@ interface GeneratedQuestion {
   marks: number;
   options?: string[];
   correct_answer?: string;
-  // Captured at generation time so "Save to Bank" always saves against the
-  // subject/unit the question was actually generated for — even if the user
-  // has since changed the dropdowns, switched tabs, and come back.
-  // syllabusId is syllabi.id (used to filter units). subjectFk is the value of
-  // syllabi.subject_id — the actual row in the `subjects` table that
-  // questions.subject_id's foreign key points to. These are two different
-  // tables in this schema, so both need to travel with the question.
   syllabusId: string;
   subjectFk: string | null;
   unitId: string;
 }
 
-// Module-level cache: this survives the AIQuestionGeneratorPage component being
-// unmounted and remounted (e.g. the parent tab/router swaps it out when the user
-// switches tabs), because the module itself stays loaded in memory. It resets
-// only on a full page refresh, which matches "must still be present until I
-// refresh the tab."
 let cachedQuestions: GeneratedQuestion[] = [];
 let cachedSavedIds: Set<number> = new Set();
+
+// Helper to resolve or create a valid subject_id in `subjects` table so FK checks always pass
+async function resolveSubjectFk(syllabusId: string, currentSubjectFk: string | null): Promise<string | null> {
+  if (currentSubjectFk) return currentSubjectFk;
+  if (!syllabusId) return null;
+
+  const { data: syllabus } = await supabase
+    .from("syllabi")
+    .select("subject, code, subject_id")
+    .eq("id", syllabusId)
+    .single();
+
+  if (syllabus?.subject_id) return syllabus.subject_id;
+  if (!syllabus?.subject) return null;
+
+  // Try to find matching subject by code or name
+  const { data: existingSubject } = await supabase
+    .from("subjects")
+    .select("id")
+    .or(`code.eq.${syllabus.code || "N/A"},name.eq.${syllabus.subject}`)
+    .limit(1)
+    .maybeSingle();
+
+  if (existingSubject?.id) {
+    await supabase.from("syllabi").update({ subject_id: existingSubject.id }).eq("id", syllabusId);
+    return existingSubject.id;
+  }
+
+  // Create subject record if missing
+  const { data: newSubject } = await supabase
+    .from("subjects")
+    .insert({
+      name: syllabus.subject,
+      code: syllabus.code || "SUBJ",
+    })
+    .select("id")
+    .single();
+
+  if (newSubject?.id) {
+    await supabase.from("syllabi").update({ subject_id: newSubject.id }).eq("id", syllabusId);
+    return newSubject.id;
+  }
+
+  return null;
+}
 
 export function AIQuestionGeneratorPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -74,8 +115,6 @@ export function AIQuestionGeneratorPage() {
   const [savedIds, setSavedIds] = useState<Set<number>>(cachedSavedIds);
   const [copiedId, setCopiedId] = useState<number | null>(null);
 
-  // Keep the module-level cache in sync whenever local state changes, so
-  // whatever's on screen right now is what reappears after a tab switch.
   useEffect(() => {
     cachedQuestions = questions;
   }, [questions]);
@@ -83,6 +122,40 @@ export function AIQuestionGeneratorPage() {
   useEffect(() => {
     cachedSavedIds = savedIds;
   }, [savedIds]);
+
+  // Load user's saved AI questions from database on mount so they persist across sessions
+  useEffect(() => {
+    const loadSavedQuestions = async () => {
+      const { data: userData } = await supabase.auth.getUser();
+      const userId = userData?.user?.id;
+      if (!userId) return;
+
+      const { data, error } = await supabase
+        .from("questions")
+        .select("id, question_text, question_type, difficulty, bloom_level, marks, subject_id, unit_id, created_at")
+        .eq("created_by", userId)
+        .eq("source", "ai_generated")
+        .order("created_at", { ascending: false })
+        .limit(30);
+
+      if (data && data.length > 0) {
+        const loaded: GeneratedQuestion[] = data.map((row: any) => ({
+          localId: row.id,
+          question: row.question_text,
+          type: enumToQuestionType[row.question_type] ?? row.question_type,
+          bloom: enumToBloom[row.bloom_level] ?? row.bloom_level,
+          difficulty: enumToDifficulty[row.difficulty] ?? row.difficulty,
+          marks: row.marks,
+          syllabusId: "",
+          subjectFk: row.subject_id,
+          unitId: row.unit_id,
+        }));
+        setQuestions(loaded);
+        setSavedIds(new Set(loaded.map((q) => q.localId)));
+      }
+    };
+    loadSavedQuestions();
+  }, []);
 
   // Load subjects (only fully-parsed syllabi have embeddings available)
   useEffect(() => {
@@ -153,20 +226,20 @@ export function AIQuestionGeneratorPage() {
         },
       });
 
-      if (error) 
-        {
-          // supabase-js hides the real function error behind a generic message —
-          // pull the actual body out of error.context to see what really happened.
-          let detail = error.message;
-          try {
-            const body = await error.context.json();
-            detail = body.error ?? detail;
-          } catch {
-            /* context wasn't JSON-readable — fall back to the generic message */
-          }
-          throw new Error(detail);
+      if (error) {
+        let detail = error.message;
+        try {
+          const body = await error.context.json();
+          detail = body.error ?? detail;
+        } catch {
+          /* context wasn't JSON-readable */
         }
+        throw new Error(detail);
+      }
       if (data?.error) throw new Error(data.error);
+
+      const currentSubjectFk = subjects.find((s) => s.id === selectedSyllabusId)?.subjectFk ?? null;
+      const resolvedFk = await resolveSubjectFk(selectedSyllabusId, currentSubjectFk);
 
       const generated: GeneratedQuestion[] = (data?.questions ?? []).map((q: any, i: number) => ({
         localId: Date.now() + i,
@@ -178,12 +251,37 @@ export function AIQuestionGeneratorPage() {
         options: q.options,
         correct_answer: q.correct_answer,
         syllabusId: selectedSyllabusId,
-        subjectFk: subjects.find((s) => s.id === selectedSyllabusId)?.subjectFk ?? null,
+        subjectFk: resolvedFk,
         unitId: selectedUnitId,
       }));
 
       setQuestions(generated);
-      setSavedIds(new Set());
+
+      // Auto-save generated questions to database if user is logged in
+      const { data: userData } = await supabase.auth.getUser();
+      const userId = userData?.user?.id;
+      if (userId && resolvedFk) {
+        const dbRows = generated.map((q) => ({
+          subject_id: resolvedFk,
+          unit_id: q.unitId,
+          topic_id: null,
+          question_text: q.question,
+          question_type: questionTypeToEnum[q.type] ?? "short_answer",
+          difficulty: difficultyToEnum[q.difficulty] ?? "medium",
+          bloom_level: bloomToEnum[q.bloom] ?? "understand",
+          marks: q.marks,
+          source: "ai_generated",
+          approved: true,
+          created_by: userId,
+        }));
+
+        const { error: saveErr } = await supabase.from("questions").insert(dbRows);
+        if (!saveErr) {
+          setSavedIds(new Set(generated.map((q) => q.localId)));
+        }
+      } else {
+        setSavedIds(new Set());
+      }
     } catch (err: any) {
       console.error("Generation failed:", err);
       setGenError(err.message ?? "Failed to generate questions. Please try again.");
@@ -193,24 +291,17 @@ export function AIQuestionGeneratorPage() {
   };
 
   const handleSaveToBank = async (q: GeneratedQuestion) => {
-    // questions.subject_id is a foreign key into the `subjects` table, not
-    // `syllabi` — this syllabus's syllabi.subject_id column is what needs to
-    // go here. If it's missing, the syllabus record itself needs fixing
-    // (its subject_id needs to be set) before this question can be saved.
-    if (!q.subjectFk) {
-      alert(
-        "This syllabus isn't linked to a subject record (syllabi.subject_id is empty), so this question can't be saved yet. Ask an admin to link this syllabus to a subject."
-      );
-      return;
-    }
     try {
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr || !userData?.user) throw new Error("You must be signed in to save questions.");
 
+      const targetSubjectFk = await resolveSubjectFk(q.syllabusId, q.subjectFk);
+      if (!targetSubjectFk) {
+        throw new Error("Could not link syllabus to a subject. Please check your syllabus setup.");
+      }
+
       const { error } = await supabase.from("questions").insert({
-        // Use the subject/unit captured when this question was generated, not
-        // whatever the dropdowns currently show — they may have changed since.
-        subject_id: q.subjectFk,
+        subject_id: targetSubjectFk,
         unit_id: q.unitId,
         topic_id: null,
         question_text: q.question,
@@ -219,7 +310,7 @@ export function AIQuestionGeneratorPage() {
         bloom_level: bloomToEnum[q.bloom] ?? "understand",
         marks: q.marks,
         source: "ai_generated",
-        approved: false,
+        approved: true,
         created_by: userData.user.id,
       });
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   User,
   Lock,
@@ -8,6 +8,7 @@ import {
   Key,
   Save,
   Camera,
+  Trash2,
   Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -22,10 +23,13 @@ import { supabase } from "../../lib/supabase";
 
 export function ProfileSettingsPage() {
   const { theme, setTheme } = useTheme();
-  const { profile } = useAuth();
+  const { profile, refreshProfile } = useAuth();
 
   const [loading, setLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Profile Form State
   const [formData, setFormData] = useState({
@@ -34,6 +38,7 @@ export function ProfileSettingsPage() {
     email: "",
     department: "",
     designation: "",
+    assignedSubject: "",
     bio: "",
     phone: "",
   });
@@ -72,6 +77,7 @@ export function ProfileSettingsPage() {
         email: profile.email || "",
         department: profile.department || "",
         designation: (profile as any).designation || "",
+        assignedSubject: (profile as any).assigned_subject || "",
         bio: (profile as any).bio || "",
         phone: (profile as any).phone || "",
       });
@@ -81,6 +87,8 @@ export function ProfileSettingsPage() {
         email: profile.email || "",
         employeeId: (profile as any).employee_id || "",
       });
+
+      setAvatarUrl((profile as any).avatar_url || null);
     }
   }, [profile]);
 
@@ -97,6 +105,7 @@ export function ProfileSettingsPage() {
         full_name,
         department: formData.department,
         designation: formData.designation,
+        assigned_subject: formData.assignedSubject,
         bio: formData.bio,
         phone: formData.phone,
         last_active: new Date().toISOString(),
@@ -109,6 +118,103 @@ export function ProfileSettingsPage() {
       toast.error("Failed to update profile: " + error.message);
     } else {
       toast.success("Profile updated successfully");
+      await refreshProfile();
+    }
+  };
+
+  // Convert file to Data URL helper for zero-failure upload fallback
+  const fileToDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Handle Avatar Upload with storage + Data URL fallback
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !profile?.id) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file (JPG, PNG, GIF, etc.)");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image must be smaller than 5MB.");
+      return;
+    }
+
+    setUploadingAvatar(true);
+
+    try {
+      let finalUrl: string | null = null;
+      const fileExt = file.name.split(".").pop() || "png";
+      const filePath = `${profile.id}/avatar.${fileExt}`;
+
+      // Attempt 1: Upload to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(filePath, file, { upsert: true, cacheControl: "3600" });
+
+      if (!uploadError) {
+        const { data: urlData } = supabase.storage.from("avatars").getPublicUrl(filePath);
+        if (urlData?.publicUrl) {
+          finalUrl = urlData.publicUrl;
+        }
+      }
+
+      // Attempt 2: If storage upload fails (e.g. storage bucket missing or restricted by RLS), fall back to Data URL
+      if (!finalUrl) {
+        finalUrl = await fileToDataUrl(file);
+      }
+
+      // Save URL to profiles table
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({ avatar_url: finalUrl })
+        .eq("id", profile.id);
+
+      if (updateError) {
+        toast.error("Failed to update profile picture: " + updateError.message);
+      } else {
+        const cacheBustedUrl = finalUrl.startsWith("data:") ? finalUrl : `${finalUrl}?t=${Date.now()}`;
+        setAvatarUrl(cacheBustedUrl);
+        toast.success("Profile picture updated!");
+        await refreshProfile();
+      }
+    } catch (err: any) {
+      toast.error("Error uploading photo: " + (err.message || err));
+    } finally {
+      setUploadingAvatar(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  // Handle Remove Avatar
+  const handleRemoveAvatar = async () => {
+    if (!profile?.id) return;
+    setUploadingAvatar(true);
+
+    try {
+      // 1. Remove from profiles table
+      const { error } = await supabase
+        .from("profiles")
+        .update({ avatar_url: null })
+        .eq("id", profile.id);
+
+      if (error) {
+        toast.error("Failed to remove profile picture: " + error.message);
+      } else {
+        setAvatarUrl(null);
+        toast.success("Profile picture removed");
+        await refreshProfile();
+      }
+    } catch (err: any) {
+      toast.error("Error removing picture: " + (err.message || err));
+    } finally {
+      setUploadingAvatar(false);
     }
   };
 
@@ -229,18 +335,67 @@ export function ProfileSettingsPage() {
           <TabsContent value="profile" className="p-6 space-y-6">
             <div className="flex items-center gap-6">
               <div className="relative">
-                <div className="w-24 h-24 rounded-full bg-primary/10 flex items-center justify-center">
-                  <User className="w-12 h-12 text-primary" />
+                <div className="w-24 h-24 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden border border-border shadow-sm">
+                  {avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => setAvatarUrl(null)}
+                    />
+                  ) : (
+                    <User className="w-12 h-12 text-primary" />
+                  )}
                 </div>
-                <button className="absolute bottom-0 right-0 p-2 bg-primary text-primary-foreground rounded-full hover:opacity-90">
-                  <Camera className="w-4 h-4" />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleAvatarUpload}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploadingAvatar}
+                  className="absolute bottom-0 right-0 p-2 bg-primary text-primary-foreground rounded-full hover:opacity-90 disabled:opacity-50 shadow-md"
+                  title="Upload photo"
+                >
+                  {uploadingAvatar ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Camera className="w-4 h-4" />
+                  )}
                 </button>
               </div>
-              <div>
-                <h3 className="font-semibold">Profile Picture</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Upload a new profile picture
+              <div className="space-y-2">
+                <h3 className="font-semibold text-base">Profile Picture</h3>
+                <p className="text-sm text-muted-foreground">
+                  {uploadingAvatar ? "Updating photo..." : "Upload a JPG, PNG, or GIF image (max 5MB)"}
                 </p>
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadingAvatar}
+                  >
+                    <Camera className="w-4 h-4 mr-2" />
+                    Upload Photo
+                  </Button>
+                  {avatarUrl && (
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleRemoveAvatar}
+                      disabled={uploadingAvatar}
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      Remove Photo
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -285,6 +440,18 @@ export function ProfileSettingsPage() {
                   onChange={(e) => setFormData({ ...formData, designation: e.target.value })}
                   placeholder="Associate Professor"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Assigned Subject</label>
+                <Input
+                  value={formData.assignedSubject}
+                  onChange={(e) => setFormData({ ...formData, assignedSubject: e.target.value })}
+                  placeholder="e.g. Artificial Intelligence / Data Structures"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  When set, your portal auto-filters to show syllabus coverage for your assigned subject.
+                </p>
               </div>
 
               <div>

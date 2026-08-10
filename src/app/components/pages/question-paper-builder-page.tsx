@@ -19,6 +19,7 @@ import {
   AlertTriangle,
   Search,
   RotateCcw,
+  Save,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -474,6 +475,9 @@ export function QuestionPaperBuilderPage() {
     { tempId: number; sectionId: string; question: Question; matchedText: string; matchedSection: string }[]
   >([]);
 
+  // Chapter/unit filter for AI generation
+  const [selectedUnitIds, setSelectedUnitIds] = useState<Set<string>>(new Set());
+
   // Question bank modal
   const [bankModalSectionId, setBankModalSectionId] = useState<string | null>(null);
   const [bankQuestions, setBankQuestions] = useState<BankQuestion[]>([]);
@@ -523,7 +527,27 @@ export function QuestionPaperBuilderPage() {
       const { data } = await supabase.auth.getUser();
       const uid = data?.user?.id ?? null;
       setCurrentUserId(uid);
-      if (uid) refreshPapersGeneratedCount(uid);
+      if (uid) {
+        refreshPapersGeneratedCount(uid);
+        // Load latest saved question paper from database so work persists across logins/reloads
+        try {
+          const { data: latestPaper } = await supabase
+            .from("question_papers")
+            .select("id, content")
+            .eq("created_by", uid)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (latestPaper?.content?.sections && latestPaper.content.sections.length > 0) {
+            setSections(latestPaper.content.sections);
+            if (latestPaper.content.paperDetails) setPaperDetails(latestPaper.content.paperDetails);
+            if (latestPaper.content.selectedSyllabusId) setSelectedSyllabusId(latestPaper.content.selectedSyllabusId);
+          }
+        } catch (err) {
+          console.error("Error restoring latest paper:", err);
+        }
+      }
     }
     initUser();
   }, []);
@@ -547,7 +571,14 @@ export function QuestionPaperBuilderPage() {
   }, [selectedSyllabusId, syllabi]);
 
   // --- AI Generation Helpers ---
-  const pickRandomUnit = () => units[Math.floor(Math.random() * units.length)];
+  const getFilteredUnits = () => {
+    if (selectedUnitIds.size === 0) return units;
+    return units.filter((u) => selectedUnitIds.has(u.id));
+  };
+  const pickRandomUnit = () => {
+    const pool = getFilteredUnits();
+    return pool[Math.floor(Math.random() * pool.length)];
+  };
 
   const generateSingleQuestion = async (
     type: string,
@@ -556,7 +587,8 @@ export function QuestionPaperBuilderPage() {
     difficulty: string,
     specificUnit?: any
   ): Promise<Question | null> => {
-    if (units.length === 0) return null;
+    const pool = getFilteredUnits();
+    if (pool.length === 0) return null;
     const targetUnit = specificUnit || pickRandomUnit();
 
     try {
@@ -730,15 +762,19 @@ export function QuestionPaperBuilderPage() {
 
       const results = await Promise.all(promises);
 
-      setSections((prev) =>
-        prev.map((s) => {
-          const generated = results.find((r) => r.id === s.id);
-          if (generated) {
-            return { ...s, questions: generated.questions };
-          }
-          return s;
-        })
-      );
+      const updatedSections = currentSectionsSnapshot.map((s) => {
+        const generated = results.find((r) => r.id === s.id);
+        if (generated) {
+          return { ...s, questions: generated.questions };
+        }
+        return s;
+      });
+
+      setSections(updatedSections);
+      // Auto-save generated paper draft to database
+      setTimeout(() => {
+        savePaperRecord("draft");
+      }, 500);
     } catch (e) {
       console.error(e);
       alert("An error occurred during full paper generation.");
@@ -1179,6 +1215,18 @@ export function QuestionPaperBuilderPage() {
               {generatingPaper ? "Building Paper..." : "Auto-Generate Full Paper"}
             </Button>
 
+            <Button
+              variant="outline"
+              onClick={async () => {
+                const ok = await savePaperRecord("draft");
+                if (ok) alert("Question paper saved to database successfully!");
+              }}
+              disabled={syllabi.length === 0}
+            >
+              <Save className="w-4 h-4 mr-2" />
+              Save Paper
+            </Button>
+
             <Button variant="outline" onClick={openPaperHistory}>
               <History className="w-4 h-4 mr-2" />
               History{papersGeneratedCount != null ? ` (${papersGeneratedCount})` : ""}
@@ -1259,6 +1307,60 @@ export function QuestionPaperBuilderPage() {
                     onChange={(e) => setPaperDetails({ ...paperDetails, instructions: e.target.value })}
                   />
                 </div>
+
+                {/* Chapter / Unit Filter */}
+                {units.length > 0 && (
+                  <div className="pt-4 border-t border-border">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium">Chapters for AI</label>
+                      {selectedUnitIds.size > 0 && (
+                        <button
+                          onClick={() => setSelectedUnitIds(new Set())}
+                          className="text-xs text-primary hover:underline"
+                        >
+                          Clear all
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      {selectedUnitIds.size === 0
+                        ? "All chapters (click to filter)"
+                        : `${selectedUnitIds.size} of ${units.length} selected`}
+                    </p>
+                    <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+                      {units.map((u) => {
+                        const isChecked = selectedUnitIds.has(u.id);
+                        return (
+                          <label
+                            key={u.id}
+                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer transition-colors text-sm ${
+                              isChecked
+                                ? "bg-primary/10 text-primary font-medium"
+                                : "hover:bg-muted"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() =>
+                                setSelectedUnitIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(u.id)) next.delete(u.id);
+                                  else next.add(u.id);
+                                  return next;
+                                })
+                              }
+                              className="accent-primary w-3.5 h-3.5"
+                            />
+                            <span className="truncate">
+                              Unit {u.unit_number}: {u.title}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* Stats */}
                 <div className="pt-4 border-t border-border space-y-3">

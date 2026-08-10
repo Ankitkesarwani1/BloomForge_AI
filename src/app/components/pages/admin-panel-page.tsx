@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from "react";
+import type React from "react";
 import {
   Users,
-  Shield,
   FileText,
   Activity,
   Search,
   MoreVertical,
   Plus,
   Edit,
+  Eye,
   Trash2,
   CheckCircle,
   XCircle,
@@ -43,6 +44,13 @@ type UserProfile = {
   email: string | null;
   role: string | null;
   department: string | null;
+  assigned_subject: string | null;
+  designation?: string | null;
+  bio?: string | null;
+  phone?: string | null;
+  username?: string | null;
+  employee_id?: string | null;
+  avatar_url?: string | null;
   last_active: string | null;
 };
 
@@ -267,9 +275,19 @@ export function AdminPanelPage() {
   const [editUserName, setEditUserName] = useState("");
   const [editUserRole, setEditUserRole] = useState<string>("faculty");
   const [editUserDept, setEditUserDept] = useState("");
+  const [editUserSubject, setEditUserSubject] = useState("");
   const [editingUser, setEditingUser] = useState(false);
   const [editUserError, setEditUserError] = useState<string | null>(null);
   const [editUserSuccess, setEditUserSuccess] = useState(false);
+
+  // ── View User modal state
+  const [showViewUser, setShowViewUser] = useState(false);
+  const [viewingUser, setViewingUser] = useState<UserProfile | null>(null);
+
+  function openViewUser(user: UserProfile) {
+    setViewingUser(user);
+    setShowViewUser(true);
+  }
 
   // ── Add Subject modal state
   const [showAddSubject, setShowAddSubject] = useState(false);
@@ -315,15 +333,36 @@ export function AdminPanelPage() {
     fetchStats();
   }, []);
 
-  // ─── Fetch Users ───────────────────────────────────────────────────────────
+  // ─── Fetch Users with Fallback Strategy ────────────────────────────────────
   async function fetchUsers() {
     setLoadingUsers(true);
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("profiles")
-      .select("id, full_name, email, role, department, last_active")
+      .select("*")
       .order("full_name", { ascending: true });
-    if (!error && data) setUsers(data as UserProfile[]);
-    else console.error("Error fetching users:", error?.message);
+
+    if (error) {
+      console.warn("Primary fetchUsers select(*) failed, trying column fallback:", error.message);
+      const fallback1 = await supabase
+        .from("profiles")
+        .select("id, full_name, email, role, department, assigned_subject, last_active")
+        .order("full_name", { ascending: true });
+
+      if (fallback1.error) {
+        console.warn("Fallback 1 failed, trying core fields fallback:", fallback1.error.message);
+        const fallback2 = await supabase
+          .from("profiles")
+          .select("id, full_name, email, role, department, last_active")
+          .order("full_name", { ascending: true });
+        data = (fallback2.data as any) ?? [];
+      } else {
+        data = (fallback1.data as any) ?? [];
+      }
+    }
+
+    if (data) {
+      setUsers(data as UserProfile[]);
+    }
     setLoadingUsers(false);
   }
 
@@ -442,6 +481,7 @@ export function AdminPanelPage() {
     setEditUserName(user.full_name || "");
     setEditUserRole(user.role || "faculty");
     setEditUserDept(user.department || "");
+    setEditUserSubject(user.assigned_subject || "");
     setShowEditUser(true);
     setEditUserSuccess(false);
     setEditUserError(null);
@@ -459,6 +499,7 @@ export function AdminPanelPage() {
         full_name: editUserName.trim(),
         role: editUserRole,
         department: editUserDept.trim() || null,
+        assigned_subject: editUserSubject.trim() || null,
       })
       .eq("id", editUserId);
 
@@ -658,6 +699,7 @@ export function AdminPanelPage() {
                       <th className="text-left p-3 font-semibold text-sm">Email</th>
                       <th className="text-left p-3 font-semibold text-sm">Role</th>
                       <th className="text-left p-3 font-semibold text-sm">Department</th>
+                      <th className="text-left p-3 font-semibold text-sm">Assigned Subject</th>
                       <th className="text-left p-3 font-semibold text-sm">Last Active</th>
                       <th className="text-left p-3 font-semibold text-sm">Actions</th>
                     </tr>
@@ -665,14 +707,14 @@ export function AdminPanelPage() {
                   <tbody>
                     {loadingUsers ? (
                       <tr>
-                        <td colSpan={6} className="text-center py-12">
+                        <td colSpan={7} className="text-center py-12">
                           <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
                           <p className="text-muted-foreground mt-2 text-sm">Loading users…</p>
                         </td>
                       </tr>
                     ) : filteredUsers.length === 0 ? (
                       <EmptyRow
-                        cols={6}
+                        cols={7}
                         message={
                           userSearch
                             ? "No users match your search."
@@ -683,9 +725,21 @@ export function AdminPanelPage() {
                       filteredUsers.map((user) => (
                         <tr
                           key={user.id}
-                          className="border-b border-border hover:bg-accent/50 transition-colors"
+                          className="border-b border-border hover:bg-accent/50 transition-colors cursor-pointer"
+                          onClick={() => openViewUser(user)}
                         >
-                          <td className="p-3 font-semibold">{user.full_name ?? "—"}</td>
+                          <td className="p-3 font-semibold">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden text-xs font-bold text-primary border border-primary/20 flex-shrink-0">
+                                {user.avatar_url ? (
+                                  <img src={user.avatar_url} alt="" className="w-full h-full object-cover" />
+                                ) : (
+                                  user.full_name?.charAt(0).toUpperCase() || "U"
+                                )}
+                              </div>
+                              <span>{user.full_name ?? "—"}</span>
+                            </div>
+                          </td>
                           <td className="p-3 text-muted-foreground">{user.email ?? "—"}</td>
                           <td className="p-3">
                             <Badge variant={user.role === "admin" ? "default" : "secondary"}>
@@ -693,10 +747,19 @@ export function AdminPanelPage() {
                             </Badge>
                           </td>
                           <td className="p-3">{user.department ?? <span className="text-muted-foreground">—</span>}</td>
+                          <td className="p-3">
+                            {user.assigned_subject ? (
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-primary/10 text-primary border border-primary/20">
+                                {user.assigned_subject}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground text-xs italic">Unassigned</span>
+                            )}
+                          </td>
                           <td className="p-3 text-muted-foreground text-sm">
                             {formatRelativeTime(user.last_active)}
                           </td>
-                          <td className="p-3">
+                          <td className="p-3" onClick={(e) => e.stopPropagation()}>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button variant="ghost" size="sm">
@@ -704,6 +767,10 @@ export function AdminPanelPage() {
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => openViewUser(user)}>
+                                  <Eye className="w-4 h-4 mr-2" />
+                                  View Details
+                                </DropdownMenuItem>
                                 <DropdownMenuItem onClick={() => openEditUser(user)}>
                                   <Edit className="w-4 h-4 mr-2" />
                                   Edit User
@@ -1099,6 +1166,14 @@ export function AdminPanelPage() {
               />
             </FormField>
 
+            <FormField label="Assigned Subject">
+              <Input
+                placeholder="e.g. Artificial Intelligence / Data Structures"
+                value={editUserSubject}
+                onChange={(e) => setEditUserSubject(e.target.value)}
+              />
+            </FormField>
+
             {editUserError && (
               <div className="p-3 bg-destructive/10 border border-destructive/30 rounded-lg">
                 <p className="text-sm text-destructive">{editUserError}</p>
@@ -1130,6 +1205,86 @@ export function AdminPanelPage() {
               </Button>
             </div>
           </form>
+        )}
+      </Modal>
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          VIEW USER DETAILS MODAL
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Modal open={showViewUser} onClose={() => setShowViewUser(false)} title="User Profile Details">
+        {viewingUser && (
+          <div className="space-y-6 py-2">
+            <div className="flex items-center gap-4 border-b border-border pb-4">
+              <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden border border-primary/20 text-primary font-bold text-xl flex-shrink-0">
+                {viewingUser.avatar_url ? (
+                  <img src={viewingUser.avatar_url} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  viewingUser.full_name?.charAt(0).toUpperCase() || "U"
+                )}
+              </div>
+              <div>
+                <h3 className="font-bold text-lg">{viewingUser.full_name || "Unnamed User"}</h3>
+                <p className="text-sm text-muted-foreground">{viewingUser.email || "No email"}</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <Badge variant={viewingUser.role === "admin" ? "default" : "secondary"}>
+                    {capitalizeRole(viewingUser.role)}
+                  </Badge>
+                  {viewingUser.department && (
+                    <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-md font-medium">
+                      {viewingUser.department}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="bg-accent/40 p-3 rounded-xl">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Assigned Subject</p>
+                <p className="font-semibold text-foreground mt-0.5">
+                  {viewingUser.assigned_subject || "Not assigned"}
+                </p>
+              </div>
+
+              <div className="bg-accent/40 p-3 rounded-xl">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Designation</p>
+                <p className="font-semibold text-foreground mt-0.5">
+                  {viewingUser.designation || "Not specified"}
+                </p>
+              </div>
+
+              <div className="bg-accent/40 p-3 rounded-xl">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Employee ID</p>
+                <p className="font-semibold text-foreground mt-0.5">
+                  {viewingUser.employee_id || "N/A"}
+                </p>
+              </div>
+
+              <div className="bg-accent/40 p-3 rounded-xl">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Phone Number</p>
+                <p className="font-semibold text-foreground mt-0.5">
+                  {viewingUser.phone || "Not provided"}
+                </p>
+              </div>
+            </div>
+
+            {viewingUser.bio && (
+              <div className="bg-accent/40 p-3 rounded-xl text-sm">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-1">Bio / Notes</p>
+                <p className="text-foreground leading-relaxed">{viewingUser.bio}</p>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <Button variant="outline" onClick={() => setShowViewUser(false)}>
+                Close
+              </Button>
+              <Button onClick={() => { setShowViewUser(false); openEditUser(viewingUser); }}>
+                <Edit className="w-4 h-4 mr-2" />
+                Edit Profile
+              </Button>
+            </div>
+          </div>
         )}
       </Modal>
 

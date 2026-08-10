@@ -177,6 +177,7 @@ export function AnswerKeyGeneratorPage() {
   const [loadingAnswers, setLoadingAnswers] = useState(false);
   const [selectedLocalId, setSelectedLocalId] = useState<number | null>(null);
 
+  const [aiProvider, setAiProvider] = useState<"chatgpt" | "gemini">("chatgpt");
   const [generatingAll, setGeneratingAll] = useState(false);
   const [generatingId, setGeneratingId] = useState<number | null>(null);
   const [genProgress, setGenProgress] = useState(0);
@@ -289,6 +290,7 @@ export function AnswerKeyGeneratorPage() {
           difficulty: fq.difficulty,
           unit: fq.unit,
           exam_format: selectedPaper?.content?.paperDetails.examFormat,
+          provider: aiProvider,
         },
       });
 
@@ -504,6 +506,17 @@ export function AnswerKeyGeneratorPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 bg-background border border-border rounded-xl px-3 py-1.5 text-sm">
+            <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider">Model:</span>
+            <select
+              value={aiProvider}
+              onChange={(e) => setAiProvider(e.target.value as "chatgpt" | "gemini")}
+              className="bg-transparent focus:outline-none text-foreground font-medium text-sm cursor-pointer"
+            >
+              <option value="chatgpt">ChatGPT (OpenAI)</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+          </div>
           <Button
             variant="outline"
             onClick={handleGenerateAll}

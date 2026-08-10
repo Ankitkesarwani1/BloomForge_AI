@@ -23,28 +23,86 @@ function depthGuidance(marks: number): string {
 
 async function callGemini(prompt: string) {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey! },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          maxOutputTokens: 4096, // headroom for long-answer model answers with worked examples
-        },
-      }),
+  const models = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-2.5-flash"];
+  let lastError: Error | null = null;
+
+  for (const model of models) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey! },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              maxOutputTokens: 4096, // headroom for long-answer model answers with worked examples
+            },
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const errText = await res.text();
+        lastError = new Error(`Gemini generation error (${model}): ${res.status} ${errText}`);
+        console.warn(`Model ${model} failed:`, res.status, errText);
+        continue;
+      }
+
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) {
+        lastError = new Error(`Gemini (${model}) returned no content (likely blocked by safety filters or empty response)`);
+        continue;
+      }
+      return text;
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`Attempt with ${model} failed with exception:`, err);
     }
-  );
+  }
+
+  throw lastError || new Error("All Gemini model attempts failed.");
+}
+
+async function callChatGPT(prompt: string, customApiKey?: string) {
+  const apiKey = customApiKey || Deno.env.get("OPENAI_API_KEY");
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not configured");
+  }
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: "You are an experienced university examiner writing official answer keys in JSON format.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.7,
+    }),
+  });
 
   if (!res.ok) {
-    throw new Error(`Gemini generation error: ${res.status} ${await res.text()}`);
+    const errText = await res.text();
+    throw new Error(`ChatGPT generation error: ${res.status} ${errText}`);
   }
 
   const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("Gemini returned no content (likely blocked by safety filters or empty response)");
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) throw new Error("ChatGPT returned no text response");
   return text;
 }
 
@@ -54,11 +112,28 @@ interface AnswerKeyResult {
   rubric: string;
 }
 
-async function generateAnswerKeyWithRetry(prompt: string): Promise<AnswerKeyResult> {
+async function generateAnswerKeyWithRetry(
+  prompt: string,
+  provider?: string,
+  openaiKey?: string
+): Promise<AnswerKeyResult> {
   let lastErr: unknown;
+  const preferredChatGPT = provider === "chatgpt" || Boolean(openaiKey || Deno.env.get("OPENAI_API_KEY"));
+
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const text = await callGemini(prompt);
+      let text: string;
+      if (preferredChatGPT) {
+        try {
+          text = await callChatGPT(prompt, openaiKey);
+        } catch (chatGptErr) {
+          console.warn(`ChatGPT attempt ${attempt} failed, falling back to Gemini:`, chatGptErr);
+          text = await callGemini(prompt);
+        }
+      } else {
+        text = await callGemini(prompt);
+      }
+
       const cleaned = text.replace(/^```json\s*|```$/g, "").trim();
       const parsed = JSON.parse(cleaned);
       if (
@@ -83,7 +158,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { question, marks, bloom_level, difficulty, unit, exam_format } = await req.json();
+    const { question, marks, bloom_level, difficulty, unit, exam_format, provider, openai_api_key } = await req.json();
 
     if (!question || !marks) {
       return new Response(JSON.stringify({ error: "question and marks are required" }), {
@@ -112,7 +187,7 @@ Respond with ONLY valid JSON (no markdown, no code fences, no commentary) in exa
   "rubric": "string"
 }`;
 
-    const result = await generateAnswerKeyWithRetry(prompt);
+    const result = await generateAnswerKeyWithRetry(prompt, provider, openai_api_key);
 
     // Safety net: if the marking scheme doesn't sum to the question's
     // marks, scale it proportionally rather than shipping a mismatched

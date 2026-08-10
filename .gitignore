@@ -1,3 +1,28 @@
 node_modules
 .env
 venv
+
+# Environment files
+.env.local
+.env.*
+.env.*.local
+
+# Secrets, keys and credentials
+*.key
+*.pem
+*.p12
+*.secret
+credentials.json
+secrets/
+
+# Supabase local envs
+supabase/.env
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Build outputs
+dist/
+build/

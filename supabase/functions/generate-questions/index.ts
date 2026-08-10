@@ -64,29 +64,47 @@ async function fetchFewShotExamples(syllabusId: string, questionTypeEnum: string
 
 async function callGemini(prompt: string) {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey! },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          maxOutputTokens: 8192, // headroom for multi-part, worked-example questions
-        },
-      }),
-    }
-  );
+  const models = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-2.5-flash"];
+  let lastError: Error | null = null;
 
-  if (!res.ok) {
-    throw new Error(`Gemini generation error: ${res.status} ${await res.text()}`);
+  for (const model of models) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey! },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              maxOutputTokens: 8192, // headroom for multi-part, worked-example questions
+            },
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const errText = await res.text();
+        lastError = new Error(`Gemini generation error (${model}): ${res.status} ${errText}`);
+        console.warn(`Model ${model} failed:`, res.status, errText);
+        continue;
+      }
+
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) {
+        lastError = new Error(`Gemini (${model}) returned no content (likely blocked by safety filters or empty response)`);
+        continue;
+      }
+      return text;
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`Attempt with ${model} failed with exception:`, err);
+    }
   }
 
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("Gemini returned no content (likely blocked by safety filters or empty response)");
-  return text;
+  throw lastError || new Error("All Gemini model attempts failed.");
 }
 
 async function generateQuestionsWithRetry(prompt: string) {

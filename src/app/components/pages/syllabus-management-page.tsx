@@ -659,13 +659,36 @@ export function SyllabusManagementPage() {
   const handleDelete = async (id: string, filePath: string) => {
     if (!confirm("Are you sure you want to delete this syllabus?")) return;
 
-    await supabase.storage.from('syllabi_pdfs').remove([filePath]);
-    const { error } = await supabase.from('syllabi').delete().eq('id', id);
+    try {
+      // 1. Delete associated vector embeddings/chunks
+      await supabase.from("syllabus_chunks").delete().eq("syllabus_id", id);
 
-    if (error) {
-      alert("Failed to delete syllabus record.");
-    } else {
-      setSyllabiList(prev => prev.filter(item => item.id !== id));
+      // 2. Retrieve child units & delete associated progress and topics
+      const { data: existingUnits } = await supabase.from("units").select("id").eq("syllabus_id", id);
+      const unitIds = (existingUnits ?? []).map((u) => u.id);
+
+      if (unitIds.length > 0) {
+        await supabase.from("coverage_progress").delete().in("unit_id", unitIds);
+        await supabase.from("topics").delete().in("unit_id", unitIds);
+        await supabase.from("units").delete().eq("syllabus_id", id);
+      }
+
+      // 3. Remove PDF from storage if path provided
+      if (filePath) {
+        await supabase.storage.from("syllabi_pdfs").remove([filePath]);
+      }
+
+      // 4. Delete the syllabus record
+      const { error } = await supabase.from("syllabi").delete().eq("id", id);
+
+      if (error) {
+        alert(`Failed to delete syllabus record: ${error.message}`);
+      } else {
+        setSyllabiList((prev) => prev.filter((item) => item.id !== id));
+        toast.success("Syllabus deleted successfully!");
+      }
+    } catch (err: any) {
+      alert(`Deletion failed: ${err.message || String(err)}`);
     }
   };
 
