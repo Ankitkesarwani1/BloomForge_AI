@@ -30,6 +30,31 @@ const enumToDifficulty: Record<string, string> = {
   hard: "Hard",
 };
 
+// Forward mappings — used when saving AI-generated questions back to the DB.
+// Must stay in sync with the enum maps in the generate-questions edge function.
+const questionTypeToEnum: Record<string, string> = {
+  "MCQ": "mcq",
+  "Short Answer": "short_answer",
+  "Long Answer": "long_answer",
+  "Numerical": "numerical",
+  "Case Study": "case_study",
+  "Application Based": "application",
+  "Analytical": "analytical",
+};
+const bloomToEnum: Record<string, string> = {
+  Remember: "remember",
+  Understand: "understand",
+  Apply: "apply",
+  Analyze: "analyze",
+  Evaluate: "evaluate",
+  Create: "create",
+};
+const difficultyToEnum: Record<string, string> = {
+  Easy: "easy",
+  Medium: "medium",
+  Hard: "hard",
+};
+
 interface Subject { id: string; subject: string; code: string; subjectFk: string | null; }
 interface UnitOption { id: string; unit_number: number; title: string; }
 interface GeneratedQuestion {

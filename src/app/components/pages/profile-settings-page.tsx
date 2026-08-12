@@ -21,12 +21,30 @@ import { useTheme } from "../theme-provider";
 import { useAuth } from "../../lib/auth-context";
 import { supabase } from "../../lib/supabase";
 
+interface ProfileRow {
+  id: string;
+  full_name: string;
+  email: string;
+  role: string;
+  department: string | null;
+  designation: string | null;
+  assigned_subject: string | null;
+  bio: string | null;
+  phone: string | null;
+  username: string | null;
+  employee_id: string | null;
+  avatar_url: string | null;
+  notification_preferences: Record<string, boolean> | null;
+}
+
 export function ProfileSettingsPage() {
   const { theme, setTheme } = useTheme();
-  const { profile, refreshProfile } = useAuth();
+  const { profile: rawProfile, refreshProfile } = useAuth();
+  const profile = rawProfile as unknown as ProfileRow | null;
 
   const [loading, setLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -76,19 +94,24 @@ export function ProfileSettingsPage() {
         lastName,
         email: profile.email || "",
         department: profile.department || "",
-        designation: (profile as any).designation || "",
-        assignedSubject: (profile as any).assigned_subject || "",
-        bio: (profile as any).bio || "",
-        phone: (profile as any).phone || "",
+        designation: profile.designation || "",
+        assignedSubject: profile.assigned_subject || "",
+        bio: profile.bio || "",
+        phone: profile.phone || "",
       });
 
       setAccountData({
-        username: (profile as any).username || "",
+        username: profile.username || "",
         email: profile.email || "",
-        employeeId: (profile as any).employee_id || "",
+        employeeId: profile.employee_id || "",
       });
 
-      setAvatarUrl((profile as any).avatar_url || null);
+      setAvatarUrl(profile.avatar_url || null);
+
+      const savedNotifications = profile.notification_preferences;
+      if (savedNotifications && typeof savedNotifications === "object") {
+        setNotifications((prev) => ({ ...prev, ...savedNotifications }));
+      }
     }
   }, [profile]);
 
@@ -280,6 +303,26 @@ export function ProfileSettingsPage() {
     } else {
       toast.success("Password updated successfully");
       setPasswordData({ newPassword: "", confirmPassword: "" });
+    }
+  };
+
+  // Handle Save Notification Preferences
+  const handleSaveNotifications = async () => {
+    if (!profile?.id) return;
+    setNotificationsLoading(true);
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ notification_preferences: notifications })
+      .eq("id", profile.id);
+
+    setNotificationsLoading(false);
+
+    if (error) {
+      toast.error("Failed to update notification preferences: " + error.message);
+    } else {
+      toast.success("Notification preferences updated");
+      await refreshProfile();
     }
   };
 
@@ -661,6 +704,53 @@ export function ProfileSettingsPage() {
                     }
                   />
                 </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold">Approval Needed</p>
+                    <p className="text-sm text-muted-foreground">When a question or paper needs your approval</p>
+                  </div>
+                  <Switch
+                    checked={notifications.approvalNeeded}
+                    onCheckedChange={(checked) =>
+                      setNotifications({ ...notifications, approvalNeeded: checked })
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold">Weekly Report</p>
+                    <p className="text-sm text-muted-foreground">A weekly summary of activity in your account</p>
+                  </div>
+                  <Switch
+                    checked={notifications.weeklyReport}
+                    onCheckedChange={(checked) =>
+                      setNotifications({ ...notifications, weeklyReport: checked })
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold">System Updates</p>
+                    <p className="text-sm text-muted-foreground">Announcements about new features and maintenance</p>
+                  </div>
+                  <Switch
+                    checked={notifications.systemUpdates}
+                    onCheckedChange={(checked) =>
+                      setNotifications({ ...notifications, systemUpdates: checked })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-border">
+                <Button onClick={handleSaveNotifications} disabled={notificationsLoading}>
+                  {notificationsLoading ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Save className="w-4 h-4 mr-2" />
+                  )}
+                  Save Notification Preferences
+                </Button>
               </div>
             </div>
           </TabsContent>

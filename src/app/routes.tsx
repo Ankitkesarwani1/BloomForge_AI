@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router";
+import { createBrowserRouter, Navigate } from "react-router";
 import { MainLayout } from "./components/layout/main-layout";
 import { AuthLayout } from "./components/layout/auth-layout";
 import { ProtectedRoute } from "./components/layout/protected-route";
@@ -17,6 +17,28 @@ import { AnalyticsDashboardPage } from "./components/pages/analytics-dashboard-p
 import { AdminPanelPage } from "./components/pages/admin-panel-page";
 import { ProfileSettingsPage } from "./components/pages/profile-settings-page";
 import { LandingPage } from "./components/pages/landing-page";
+import { useAuth } from "./lib/auth-context";
+
+function DashboardRedirect() {
+  const { profile, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-muted-foreground bg-background">
+        <div className="flex flex-col items-center gap-2">
+          <div className="w-8 h-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+          <p className="text-sm font-medium">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (profile?.role === "admin") {
+    return <Navigate to="/app/admin" replace />;
+  }
+
+  return <DashboardPage />;
+}
 
 export const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
@@ -36,8 +58,8 @@ export const router = createBrowserRouter([
       {
         element: <MainLayout />,
         children: [
-          { index: true, element: <DashboardPage /> },
-          { path: "dashboard", element: <DashboardPage /> },
+          { index: true, element: <DashboardRedirect /> },
+          { path: "dashboard", element: <DashboardRedirect /> },
           { path: "syllabus", element: <SyllabusManagementPage /> },
           { path: "question-bank", element: <QuestionBankPage /> },
           { path: "ai-generator", element: <AIQuestionGeneratorPage /> },

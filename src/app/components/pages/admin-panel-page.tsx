@@ -11,7 +11,6 @@ import {
   Eye,
   Trash2,
   CheckCircle,
-  XCircle,
   Loader2,
   BookOpen,
   X,
@@ -52,24 +51,8 @@ type UserProfile = {
   employee_id?: string | null;
   avatar_url?: string | null;
   last_active: string | null;
-};
-
-type Subject = {
-  id: string;
-  name: string;
-  code: string | null;
-  department: string | null;
-  creator_name: string | null;
-  question_count: number;
-};
-
-type AuditLog = {
-  id: string;
-  user_name: string | null;
-  action: string | null;
-  target: string | null;
-  created_at: string | null;
-  status: string | null;
+  questionCount?: number;
+  paperCount?: number;
 };
 
 type Stats = {
@@ -93,17 +76,6 @@ function formatRelativeTime(dateStr: string | null): string {
   if (days < 7) return `${days} day${days > 1 ? "s" : ""} ago`;
   const weeks = Math.floor(days / 7);
   return `${weeks} week${weeks > 1 ? "s" : ""} ago`;
-}
-
-function formatTimestamp(dateStr: string | null): string {
-  if (!dateStr) return "—";
-  return new Date(dateStr).toLocaleString("en-IN", {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function capitalizeRole(role: string | null): string {
@@ -240,8 +212,6 @@ export function AdminPanelPage() {
 
   // ── List state
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [stats, setStats] = useState<Stats>({
     totalUsers: 0,
     totalQuestions: 0,
@@ -250,13 +220,11 @@ export function AdminPanelPage() {
   });
 
   const [loadingUsers, setLoadingUsers] = useState(true);
-  const [loadingSubjects, setLoadingSubjects] = useState(true);
-  const [loadingLogs, setLoadingLogs] = useState(true);
   const [loadingStats, setLoadingStats] = useState(true);
+  const [contentCounts, setContentCounts] = useState<Record<string, { questionCount: number; paperCount: number }>>({});
 
   // ── Search state
   const [userSearch, setUserSearch] = useState("");
-  const [subjectSearch, setSubjectSearch] = useState("");
 
   // ── Add User modal state
   const [showAddUser, setShowAddUser] = useState(false);
@@ -289,41 +257,49 @@ export function AdminPanelPage() {
     setShowViewUser(true);
   }
 
-  // ── Add Subject modal state
-  const [showAddSubject, setShowAddSubject] = useState(false);
-  const [newSubjectName, setNewSubjectName] = useState("");
-  const [newSubjectCode, setNewSubjectCode] = useState("");
-  const [newSubjectDept, setNewSubjectDept] = useState("");
-  const [addingSubject, setAddingSubject] = useState(false);
-  const [addSubjectError, setAddSubjectError] = useState<string | null>(null);
-  const [addSubjectSuccess, setAddSubjectSuccess] = useState(false);
-
   // ─── Fetch Stats ───────────────────────────────────────────────────────────
   useEffect(() => {
     async function fetchStats() {
       setLoadingStats(true);
       try {
-        const [
-          { count: userCount },
-          { count: questionCount },
-          { count: subjectCount },
-          { count: paperCount },
-        ] = await Promise.all([
+        // `questions` and `question_papers` have RLS policies scoped to
+        // created_by = auth.uid(), so a direct client-side count only ever
+        // returns the admin's own rows (0). The edge function bypasses
+        // this safely with the service role key, gated to admins only, and
+        // also returns the per-faculty breakdown in the same round trip.
+        const [{ count: userCount }, { count: subjectCount }, statsResp] = await Promise.all([
           supabase.from("profiles").select("*", { count: "exact", head: true }),
-          supabase
-            .from("questions")
-            .select("*", { count: "exact", head: true }),
-          supabase.from("syllabi").select("*", { count: "exact", head: true }),
-          supabase
-            .from("question_papers")
-            .select("*", { count: "exact", head: true }),
+          supabase.from("subjects").select("*", { count: "exact", head: true }),
+          supabase.functions.invoke("admin-dashboard-stats"),
         ]);
-        setStats({
-          totalUsers: userCount ?? 0,
-          totalQuestions: questionCount ?? 0,
-          totalSubjects: subjectCount ?? 0,
-          totalPapers: paperCount ?? 0,
-        });
+
+        const statsErrMessage = statsResp.error?.message || (statsResp.data as any)?.error;
+        if (statsErrMessage) {
+          console.error("Error fetching content stats:", statsErrMessage);
+          setStats({
+            totalUsers: userCount ?? 0,
+            totalQuestions: 0,
+            totalSubjects: subjectCount ?? 0,
+            totalPapers: 0,
+          });
+        } else {
+          const { totalQuestions, totalPapers, perUser } = statsResp.data as {
+            totalQuestions: number;
+            totalPapers: number;
+            perUser: { id: string; questionCount: number; paperCount: number }[];
+          };
+          setStats({
+            totalUsers: userCount ?? 0,
+            totalQuestions: totalQuestions ?? 0,
+            totalSubjects: subjectCount ?? 0,
+            totalPapers: totalPapers ?? 0,
+          });
+          setContentCounts(
+            Object.fromEntries(
+              perUser.map((u) => [u.id, { questionCount: u.questionCount, paperCount: u.paperCount }])
+            )
+          );
+        }
       } catch (err) {
         console.error("Error fetching stats:", err);
       } finally {
@@ -370,81 +346,34 @@ export function AdminPanelPage() {
     fetchUsers();
   }, []);
 
-  // ─── Fetch Subjects ────────────────────────────────────────────────────────
-  async function fetchSubjects() {
-    setLoadingSubjects(true);
-    const { data, error } = await supabase
-      .from("syllabi")
-      .select("id, subject, code")
-      .order("subject", { ascending: true });
-
-    if (!error && data) {
-      const enriched: Subject[] = await Promise.all(
-        data.map(async (s: any) => {
-          const { count } = await supabase
-            .from("questions")
-            .select("*", { count: "exact", head: true })
-            .eq("subject_id", s.id);
-          return {
-            id: s.id,
-            name: s.subject,
-            code: s.code ?? null,
-            department: "Not Specified",
-            creator_name: "Admin",
-            question_count: count ?? 0,
-          };
-        })
-      );
-      setSubjects(enriched);
-    } else {
-      console.error("Error fetching syllabi:", error?.message);
-    }
-    setLoadingSubjects(false);
-  }
-
-  useEffect(() => {
-    fetchSubjects();
-  }, []);
-
-  // ─── Fetch Audit Logs ──────────────────────────────────────────────────────
-  useEffect(() => {
-    async function fetchLogs() {
-      setLoadingLogs(true);
-      const { data, error } = await supabase
-        .from("activity_log")
-        .select(
-          `id, action, target, created_at, status,
-           profiles!activity_log_user_id_fkey ( full_name )`
-        )
-        .order("created_at", { ascending: false })
-        .limit(50);
-
-      if (!error && data) {
-        setAuditLogs(
-          data.map((log: any) => ({
-            id: log.id,
-            user_name: log.profiles?.full_name ?? "System",
-            action: log.action ?? null,
-            target: log.target ?? null,
-            created_at: log.created_at ?? null,
-            status: log.status ?? null,
-          }))
-        );
-      } else {
-        console.error("Error fetching audit logs:", error?.message);
-      }
-      setLoadingLogs(false);
-    }
-    fetchLogs();
-  }, []);
-
   // ─── Add User ──────────────────────────────────────────────────────────────
   async function handleAddUser(e: React.FormEvent) {
     e.preventDefault();
     if (!newUserEmail || !newUserPassword || !newUserName) return;
-    
-    alert("Creating users from the admin panel requires a backend edge function which is not yet implemented. Please register normally via the registration page for now.");
-    
+
+    setAddingUser(true);
+    setAddUserError(null);
+
+    const { data, error } = await supabase.functions.invoke("admin-create-user", {
+      body: {
+        full_name: newUserName.trim(),
+        email: newUserEmail.trim(),
+        password: newUserPassword,
+        role: newUserRole,
+        department: newUserDept.trim() || null,
+      },
+    });
+
+    // supabase-js only rejects on network-level failures; application errors
+    // (validation, permission, duplicate email) come back as { error } in
+    // the function's response body with a non-2xx status, so check both.
+    const errMessage = error?.message || (data as any)?.error;
+    if (errMessage) {
+      setAddUserError(errMessage);
+      setAddingUser(false);
+      return;
+    }
+
     setAddUserSuccess(true);
     setAddingUser(false);
 
@@ -524,50 +453,6 @@ export function AdminPanelPage() {
     setEditUserSuccess(false);
   }
 
-  // ─── Add Subject ───────────────────────────────────────────────────────────
-  async function handleAddSubject(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newSubjectName) return;
-    setAddingSubject(true);
-    setAddSubjectError(null);
-
-    const { error } = await supabase.from("syllabi").insert({
-      subject: newSubjectName.trim(),
-      code: newSubjectCode.trim() || null,
-      status: "incomplete",
-    });
-
-    if (error) {
-      setAddSubjectError(error.message);
-      setAddingSubject(false);
-      return;
-    }
-
-    setAddSubjectSuccess(true);
-    setAddingSubject(false);
-
-    // Refresh subjects list & stats
-    await fetchSubjects();
-    setStats((prev) => ({ ...prev, totalSubjects: prev.totalSubjects + 1 }));
-
-    setTimeout(() => {
-      setShowAddSubject(false);
-      setAddSubjectSuccess(false);
-      setNewSubjectName("");
-      setNewSubjectCode("");
-      setNewSubjectDept("");
-    }, 1500);
-  }
-
-  function closeAddSubject() {
-    setShowAddSubject(false);
-    setAddSubjectError(null);
-    setAddSubjectSuccess(false);
-    setNewSubjectName("");
-    setNewSubjectCode("");
-    setNewSubjectDept("");
-  }
-
   // ─── Delete User ───────────────────────────────────────────────────────────
   async function handleDeleteUser(userId: string) {
     if (!window.confirm("Are you sure you want to delete this user?")) return;
@@ -580,36 +465,19 @@ export function AdminPanelPage() {
     }
   }
 
-  // ─── Delete Subject ────────────────────────────────────────────────────────
-  async function handleDeleteSubject(subjectId: string) {
-    if (!window.confirm("Are you sure you want to delete this subject?")) return;
-    const { error } = await supabase
-      .from("syllabi")
-      .delete()
-      .eq("id", subjectId);
-    if (!error) {
-      setSubjects((prev) => prev.filter((s) => s.id !== subjectId));
-      setStats((prev) => ({ ...prev, totalSubjects: prev.totalSubjects - 1 }));
-    } else {
-      alert("Failed to delete subject: " + error.message);
-    }
-  }
-
   // ─── Filtered lists ────────────────────────────────────────────────────────
-  const filteredUsers = users.filter(
+  const usersWithCounts = users.map((u) => ({
+    ...u,
+    questionCount: contentCounts[u.id]?.questionCount ?? 0,
+    paperCount: contentCounts[u.id]?.paperCount ?? 0,
+  }));
+
+  const filteredUsers = usersWithCounts.filter(
     (u) =>
       !userSearch ||
       u.full_name?.toLowerCase().includes(userSearch.toLowerCase()) ||
       u.email?.toLowerCase().includes(userSearch.toLowerCase()) ||
       u.department?.toLowerCase().includes(userSearch.toLowerCase())
-  );
-
-  const filteredSubjects = subjects.filter(
-    (s) =>
-      !subjectSearch ||
-      s.name?.toLowerCase().includes(subjectSearch.toLowerCase()) ||
-      s.code?.toLowerCase().includes(subjectSearch.toLowerCase()) ||
-      s.department?.toLowerCase().includes(subjectSearch.toLowerCase())
   );
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -621,7 +489,7 @@ export function AdminPanelPage() {
           <div>
             <h1 className="text-3xl font-bold">Admin Panel</h1>
             <p className="text-muted-foreground mt-1">
-              Manage users, subjects, and system settings
+              Manage users and system settings
             </p>
           </div>
           <Button onClick={() => setShowAddUser(true)}>
@@ -669,10 +537,8 @@ export function AdminPanelPage() {
         {/* Tabs */}
         <div className="bg-card border border-border rounded-xl p-6">
           <Tabs defaultValue="users">
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="users">User Management</TabsTrigger>
-              <TabsTrigger value="subjects">Subjects</TabsTrigger>
-              <TabsTrigger value="audit">Audit Logs</TabsTrigger>
               <TabsTrigger value="settings">System Settings</TabsTrigger>
             </TabsList>
 
@@ -700,6 +566,8 @@ export function AdminPanelPage() {
                       <th className="text-left p-3 font-semibold text-sm">Role</th>
                       <th className="text-left p-3 font-semibold text-sm">Department</th>
                       <th className="text-left p-3 font-semibold text-sm">Assigned Subject</th>
+                      <th className="text-left p-3 font-semibold text-sm">Questions</th>
+                      <th className="text-left p-3 font-semibold text-sm">Papers</th>
                       <th className="text-left p-3 font-semibold text-sm">Last Active</th>
                       <th className="text-left p-3 font-semibold text-sm">Actions</th>
                     </tr>
@@ -707,14 +575,14 @@ export function AdminPanelPage() {
                   <tbody>
                     {loadingUsers ? (
                       <tr>
-                        <td colSpan={7} className="text-center py-12">
+                        <td colSpan={9} className="text-center py-12">
                           <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
                           <p className="text-muted-foreground mt-2 text-sm">Loading users…</p>
                         </td>
                       </tr>
                     ) : filteredUsers.length === 0 ? (
                       <EmptyRow
-                        cols={7}
+                        cols={9}
                         message={
                           userSearch
                             ? "No users match your search."
@@ -756,6 +624,16 @@ export function AdminPanelPage() {
                               <span className="text-muted-foreground text-xs italic">Unassigned</span>
                             )}
                           </td>
+                          <td className="p-3">
+                            <span className="px-2 py-1 bg-green-500/10 text-green-600 rounded-lg font-semibold text-sm">
+                              {user.questionCount ?? 0}
+                            </span>
+                          </td>
+                          <td className="p-3">
+                            <span className="px-2 py-1 bg-purple-500/10 text-purple-600 rounded-lg font-semibold text-sm">
+                              {user.paperCount ?? 0}
+                            </span>
+                          </td>
                           <td className="p-3 text-muted-foreground text-sm">
                             {formatRelativeTime(user.last_active)}
                           </td>
@@ -796,172 +674,6 @@ export function AdminPanelPage() {
                 <p className="text-xs text-muted-foreground text-right">
                   Showing {filteredUsers.length} of {users.length} user{users.length !== 1 ? "s" : ""}
                 </p>
-              )}
-            </TabsContent>
-
-            {/* ── Subjects Tab ───────────────────────────────────────────── */}
-            <TabsContent value="subjects" className="space-y-4">
-              <div className="flex items-center gap-4">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search by name, code or department…"
-                    value={subjectSearch}
-                    onChange={(e) => setSubjectSearch(e.target.value)}
-                    className="pl-10"
-                  />
-                </div>
-                <Button onClick={() => setShowAddSubject(true)}>
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add Subject
-                </Button>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left p-3 font-semibold text-sm">Subject Name</th>
-                      <th className="text-left p-3 font-semibold text-sm">Code</th>
-                      <th className="text-left p-3 font-semibold text-sm">Department</th>
-                      <th className="text-left p-3 font-semibold text-sm">Created By</th>
-                      <th className="text-left p-3 font-semibold text-sm">Questions</th>
-                      <th className="text-left p-3 font-semibold text-sm">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {loadingSubjects ? (
-                      <tr>
-                        <td colSpan={6} className="text-center py-12">
-                          <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
-                          <p className="text-muted-foreground mt-2 text-sm">Loading subjects…</p>
-                        </td>
-                      </tr>
-                    ) : filteredSubjects.length === 0 ? (
-                      <EmptyRow
-                        cols={6}
-                        message={
-                          subjectSearch
-                            ? "No subjects match your search."
-                            : "No subjects yet. Click \"Add Subject\" to create one."
-                        }
-                      />
-                    ) : (
-                      filteredSubjects.map((subject) => (
-                        <tr
-                          key={subject.id}
-                          className="border-b border-border hover:bg-accent/50 transition-colors"
-                        >
-                          <td className="p-3 font-semibold">{subject.name}</td>
-                          <td className="p-3">
-                            {subject.code ? (
-                              <Badge variant="outline">{subject.code}</Badge>
-                            ) : (
-                              <span className="text-muted-foreground">—</span>
-                            )}
-                          </td>
-                          <td className="p-3">{subject.department ?? <span className="text-muted-foreground">—</span>}</td>
-                          <td className="p-3 text-muted-foreground">{subject.creator_name ?? "—"}</td>
-                          <td className="p-3">
-                            <span className="px-2 py-1 bg-primary/10 text-primary rounded-lg font-semibold text-sm">
-                              {subject.question_count}
-                            </span>
-                          </td>
-                          <td className="p-3">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="sm">
-                                  <MoreVertical className="w-4 h-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem>
-                                  <Edit className="w-4 h-4 mr-2" />
-                                  Edit Subject
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  className="text-destructive"
-                                  onClick={() => handleDeleteSubject(subject.id)}
-                                >
-                                  <Trash2 className="w-4 h-4 mr-2" />
-                                  Delete Subject
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </TabsContent>
-
-            {/* ── Audit Logs Tab ─────────────────────────────────────────── */}
-            <TabsContent value="audit" className="space-y-4">
-              <div className="flex items-center gap-4">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input placeholder="Search logs…" className="pl-10" />
-                </div>
-                <Button variant="outline">Export Logs</Button>
-              </div>
-
-              {loadingLogs ? (
-                <div className="text-center py-12">
-                  <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
-                  <p className="text-muted-foreground mt-2 text-sm">Loading activity logs…</p>
-                </div>
-              ) : auditLogs.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground">
-                  No activity logs found. Logs will appear as users perform actions.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {auditLogs.map((log) => (
-                    <div
-                      key={log.id}
-                      className="p-4 border border-border rounded-xl hover:bg-accent/50 transition-colors"
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-3 flex-wrap">
-                            <span className="font-semibold">{log.user_name ?? "System"}</span>
-                            <span className="text-muted-foreground">•</span>
-                            <span>{log.action ?? "Unknown action"}</span>
-                          </div>
-                          {log.target && (
-                            <p className="text-sm text-muted-foreground mt-1">
-                              Target: <span className="font-medium">{log.target}</span>
-                            </p>
-                          )}
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {formatTimestamp(log.created_at)}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 ml-4 shrink-0">
-                          {log.status === "success" ? (
-                            <CheckCircle className="w-4 h-4 text-green-500" />
-                          ) : log.status === "error" ? (
-                            <XCircle className="w-4 h-4 text-destructive" />
-                          ) : null}
-                          <Badge
-                            variant={
-                              log.status === "success"
-                                ? "default"
-                                : log.status === "error"
-                                ? "destructive"
-                                : "secondary"
-                            }
-                            className={log.status === "success" ? "bg-green-500 text-white" : ""}
-                          >
-                            {log.status ?? "unknown"}
-                          </Badge>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
               )}
             </TabsContent>
 
@@ -1285,81 +997,6 @@ export function AdminPanelPage() {
               </Button>
             </div>
           </div>
-        )}
-      </Modal>
-
-      {/* ══════════════════════════════════════════════════════════════════════
-          ADD SUBJECT MODAL
-      ══════════════════════════════════════════════════════════════════════ */}
-      <Modal open={showAddSubject} onClose={closeAddSubject} title="Add New Subject">
-        {addSubjectSuccess ? (
-          <div className="text-center py-6 space-y-3">
-            <div className="w-14 h-14 bg-green-500/10 rounded-full flex items-center justify-center mx-auto">
-              <CheckCircle className="w-8 h-8 text-green-500" />
-            </div>
-            <p className="font-semibold text-lg">Subject Added!</p>
-            <p className="text-sm text-muted-foreground">
-              The subject has been created successfully.
-            </p>
-          </div>
-        ) : (
-          <form onSubmit={handleAddSubject} className="space-y-4">
-            <FormField label="Subject Name" required>
-              <Input
-                placeholder="e.g. Data Structures & Algorithms"
-                value={newSubjectName}
-                onChange={(e) => setNewSubjectName(e.target.value)}
-                required
-              />
-            </FormField>
-
-            <FormField label="Subject Code">
-              <Input
-                placeholder="e.g. CS301 (optional)"
-                value={newSubjectCode}
-                onChange={(e) => setNewSubjectCode(e.target.value)}
-              />
-            </FormField>
-
-            <FormField label="Department">
-              <Input
-                placeholder="e.g. Computer Science (optional)"
-                value={newSubjectDept}
-                onChange={(e) => setNewSubjectDept(e.target.value)}
-              />
-            </FormField>
-
-            {addSubjectError && (
-              <div className="p-3 bg-destructive/10 border border-destructive/30 rounded-lg">
-                <p className="text-sm text-destructive">{addSubjectError}</p>
-              </div>
-            )}
-
-            <div className="flex gap-3 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                className="flex-1"
-                onClick={closeAddSubject}
-                disabled={addingSubject}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" className="flex-1" disabled={addingSubject}>
-                {addingSubject ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Adding…
-                  </>
-                ) : (
-                  <>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Subject
-                  </>
-                )}
-              </Button>
-            </div>
-          </form>
         )}
       </Modal>
     </>
